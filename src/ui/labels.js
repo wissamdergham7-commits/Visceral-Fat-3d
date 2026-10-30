@@ -12,6 +12,7 @@ export function build(ctx) {
     ['الشحم فوق الأمعاء', () => P(0.2, -1.6 - 1.2 * st.fCur, 2 + 0.3 * st.fCur)], ['الأمعاء', () => P(-1, -3.3, 1.2)],
     ['الكلية', () => P(1.3, -1.4, -1.5)], ['الدهون تحت الجلد', () => P(st.body.W - st.body.d * 0.5, -2, 0.9)],
   ];
+  if (ctx.anchors.pharynxPos) defs.push(['مجرى التنفس', () => ctx.anchors.pharynxPos.clone().add(P(0.9, 0.2, 0.6))]);
   items = defs.map(([txt, fn]) => {
     const d = document.createElement('div'); d.className = 'lb'; d.innerHTML = `<i></i>${txt}`; root.appendChild(d);
     return { d, fn };

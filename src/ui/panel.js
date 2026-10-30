@@ -3,8 +3,8 @@ import { $, clamp } from '../core/ctx.js';
 
 export const CMAP = {
   belly: { view: 'belly', pain: 'الكرش والمظهر', gain: 'خصر أنحف وثياب تعود لتناسبك بثقة' },
-  breath: { view: 'heart', pain: 'النفَس القصير والتعب', gain: 'تصعد الدرج بلا لهاث وبطاقة أعلى طوال اليوم' },
-  snore: { view: 'heart', pain: 'الشخير والنوم المتقطع', gain: 'نوم أعمق بلا شخير واستيقاظ نشيط' },
+  breath: { view: 'breath', pain: 'النفَس القصير والتعب', gain: 'تصعد الدرج بلا لهاث وبطاقة أعلى طوال اليوم' },
+  snore: { view: 'snore', pain: 'الشخير والنوم المتقطع', gain: 'نوم أعمق بلا شخير واستيقاظ نشيط' },
   health: { view: 'liver', pain: 'التحاليل والصحة', gain: 'تحاليل أنظف: سكر وضغط ودهون أقل' },
 };
 export const PAYOFF = {

@@ -1,12 +1,18 @@
 // ui/views.js — camera views, display modes (normal / split / section / tour), toggles, resize, split rendering.
 import { $, P, clamp } from '../core/ctx.js';
 
+/* a view is [position, target] or a function returning that (anchors are only known after build) */
 export const VIEWS = {
   front: [P(0, 0.2, 20), P(0, -0.1, 0)], side: [P(18.5, 0.6, 2.5), P(0, -0.2, 0)],
   heart: [P(2.6, 3, 10.8), P(0.35, 1.55, 0.5)], liver: [P(-5, 2.3, 11.6), P(-0.6, 0, 0.4)],
   belly: [P(0.9, -0.5, 14.6), P(0, -2.2, 0.7)], section: [P(0.25, 10.5, 5.2), P(0, -2.4, 0.2)],
+  full: [P(0, 2.4, 27), P(0, 2.2, 0)],
+  /* physiology stations */
+  bp: [P(3.4, 3.4, 9.2), P(0.45, 2.35, 0.1)],
+  breath: [P(5.2, -0.6, 10.4), P(0.2, 0.35, 0)],
+  snore: () => { const a = C.anchors.pharynxPos || P(0, 7.4, 0.3); return [a.clone().add(P(4.6, 1.1, 6.2)), a.clone()]; },
 };
-const VIEW_OPACITY = { front: [0.6, 0.5], side: [0.6, 0.5], heart: [0.1, 0.12], liver: [0.18, 0.35], belly: [0.3, 0.5], section: [0.25, 0.2] };
+const VIEW_OPACITY = { front: [0.6, 0.5], side: [0.6, 0.5], heart: [0.1, 0.12], liver: [0.18, 0.35], belly: [0.3, 0.5], section: [0.25, 0.2], full: [0.6, 0.5], bp: [0.1, 0.1], breath: [0.12, 0.65], snore: [0.15, 0.2] };
 
 let C, camAnim = null, hooks;
 
@@ -14,8 +20,9 @@ let C, camAnim = null, hooks;
 export function goView(name) {
   const cam = C.camera, ctl = C.controls;
   if (VIEW_OPACITY[name]) [C.state.opTarget.bone, C.state.opTarget.lung] = VIEW_OPACITY[name];
-  const [p, t] = VIEWS[name];
-  camAnim = { t: 0, p0: cam.position.clone(), p1: p, t0: ctl.target.clone(), t1: t };
+  const v = VIEWS[name]; if (!v) return;
+  const [p, t] = typeof v === 'function' ? v() : v;
+  camAnim = { t: 0, p0: cam.position.clone(), p1: p.clone(), t0: ctl.target.clone(), t1: t.clone() };
   ctl.autoRotate = false; $('rot').classList.remove('on');
 }
 /** fly to an arbitrary point, keeping the current viewing direction, at distance dist */

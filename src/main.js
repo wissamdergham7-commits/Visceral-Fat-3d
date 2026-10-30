@@ -36,12 +36,13 @@ physiology.build(ctx);
 const hooks = {
   calc: panel.calc, startTour: tour.startTour, stopTour: tour.stopTour,
   hideCard: cards.hideCard, setSection: section.setSection, drawSection: section.drawSection,
+  physShow: (p) => physUI.show && physUI.show(p), physHide: () => physUI.hide && physUI.hide(),
 };
 section.build(ctx);
 views.build(ctx, hooks);
 labels.build(ctx);
 cards.build(ctx, hooks);
-tour.build(ctx);
+tour.build(ctx, hooks);
 panel.build(ctx, hooks);
 physUI.build(ctx, hooks);
 
