@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>الدهون المخفية ثلاثي الأبعاد</title>
+<link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&display=swap" rel="stylesheet">
+<script>
+/* ⬇⬇ حط رابط صفحة الهبوط تبعك هون بين علامتي الاقتباس ⬇⬇ */
+window.LANDING_URL = "#";
+/* ⬇⬇ رقم واتساب الأخصائية بصيغة دولية بدون + ولا فراغات (مثال: 963912345678) — إذا تركته فاضي بيشتغل رابط الهبوط ⬇⬇ */
+window.WHATSAPP_NUMBER = "";
+</script>
+<style>
+:root{--bg:#0a0f1d;--card:#111a2d;--card2:#16213a;--ink:#eef2f8;--muted:#9aa8bf;--line:rgba(255,255,255,.09);
+  --accent:#34d399;--fat:#fbbf24;--ok:#34d399;--warn:#fb923c;--bad:#f87171;--panel:rgba(14,20,36,.72)}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:radial-gradient(1200px 700px at 50% -10%,#1d2a4f 0%,var(--bg) 62%);background-color:var(--bg);color:var(--ink);font-family:"Cairo",system-ui,sans-serif;line-height:1.7}
+.wrap{max-width:1120px;margin:0 auto;padding:18px 14px 56px}
+h1{font-size:clamp(24px,6.2vw,40px);line-height:1.25;margin:0;font-weight:800;letter-spacing:-.3px}
+h1 em{font-style:normal;color:var(--fat)}
+.lead{color:var(--muted);margin:6px 0 14px;font-size:15.5px}
+#viewer{position:relative;height:min(80vh,800px);min-height:500px;border-radius:24px;overflow:hidden;
+  background:radial-gradient(70% 60% at 50% 42%,#243566 0%,#0e1630 62%,#0a0f1d 100%);border:1px solid var(--line);box-shadow:0 30px 80px -30px #000}
+#viewer::after{content:"";position:absolute;inset:0;pointer-events:none;box-shadow:inset 0 0 120px 30px rgba(4,8,18,.55);border-radius:24px}
+#viewer canvas{display:block;width:100%;height:100%;touch-action:none;cursor:grab}
+.chips{position:absolute;top:10px;right:10px;left:10px;display:flex;flex-wrap:wrap;gap:6px;z-index:4}
+.chip{flex:none;border:1px solid var(--line);background:var(--panel);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);color:var(--ink);font:inherit;font-size:12.5px;font-weight:700;padding:4px 11px;border-radius:99px;cursor:pointer}
+.chip.on{background:rgba(52,211,153,.16);border-color:rgba(52,211,153,.55);color:#a7f3d0}
+.chip.mode{border-color:rgba(251,191,36,.4)}
+.chip.mode.on{background:rgba(251,191,36,.18);border-color:rgba(251,191,36,.7);color:#fde68a}
+.sep{flex:none;width:1px;background:var(--line);margin:4px 2px}
+#labels{position:absolute;inset:0;pointer-events:none;z-index:2}
+.lb{position:absolute;transform:translate(-50%,-50%);white-space:nowrap;font-size:12px;font-weight:700;color:#fff;background:rgba(10,15,29,.62);border:1px solid rgba(255,255,255,.14);padding:1px 9px 1px 8px;border-radius:99px;-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px)}
+.lb i{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--fat);margin-left:6px;vertical-align:middle;box-shadow:0 0 8px var(--fat)}
+.hud{position:absolute;left:10px;right:10px;bottom:10px;z-index:4;background:var(--panel);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);border:1px solid var(--line);border-radius:18px;padding:10px 14px 8px}
+.hud .top{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.hud .big{font-size:26px;font-weight:800;color:var(--accent);white-space:nowrap}
+.hud input{width:100%;height:28px;margin:2px 0;-webkit-appearance:none;appearance:none;background:transparent;--p:0%}
+.hud input::-webkit-slider-runnable-track{height:8px;border-radius:99px;background:linear-gradient(to left,var(--accent) var(--p),rgba(255,255,255,.14) var(--p))}
+.hud input::-moz-range-track{height:8px;border-radius:99px;background:linear-gradient(to left,var(--accent) var(--p),rgba(255,255,255,.14) var(--p))}
+.hud input::-webkit-slider-thumb{-webkit-appearance:none;width:24px;height:24px;border-radius:50%;background:#fff;border:4px solid var(--accent);margin-top:-8px;box-shadow:0 2px 8px rgba(0,0,0,.4)}
+.hud input::-moz-range-thumb{width:18px;height:18px;border-radius:50%;background:#fff;border:4px solid var(--accent)}
+.hud .sub{font-size:12.5px;color:var(--muted)}
+.status{font-weight:700;font-size:13.5px;margin:2px 0 4px}
+.status.bad{color:#fca5a5}.status.warn{color:#fdba74}.status.ok{color:#86efac}
+#loading{position:absolute;inset:0;display:grid;place-items:center;color:var(--muted);font-weight:700;z-index:5}
+/* organ info card */
+#ocard{position:absolute;right:12px;left:12px;bottom:118px;z-index:5;background:var(--panel);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);border:1px solid rgba(251,191,36,.35);border-radius:16px;padding:12px 14px;transform:translateY(16px);opacity:0;pointer-events:none;transition:.3s}
+#ocard.show{transform:none;opacity:1;pointer-events:auto}
+@media(min-width:700px){#ocard{right:12px;left:auto;max-width:360px}}
+#ocard b{font-size:16px}
+#ocard p{margin:4px 0 0;font-size:13.5px;color:#d7deea}
+#ocardX{position:absolute;top:8px;left:10px;border:0;background:transparent;color:var(--muted);font-size:18px;cursor:pointer;font-weight:800}
+/* tour bar */
+#tourbar{position:absolute;right:12px;left:12px;bottom:118px;z-index:5;background:rgba(10,15,29,.8);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);border:1px solid var(--line);border-radius:16px;padding:12px 40px 12px 14px;opacity:0;pointer-events:none;transition:.3s;transform:translateY(16px)}
+#tourbar.show{opacity:1;pointer-events:auto;transform:none}
+#tourtext{font-size:15px;font-weight:700;transition:opacity .3s;min-height:46px}
+#tourdots{display:flex;gap:5px;margin-top:6px}
+#tourdots i{width:7px;height:7px;border-radius:50%;background:rgba(255,255,255,.2)}
+#tourdots i.on{background:var(--fat)}
+#tourX{position:absolute;top:8px;left:10px;border:0;background:transparent;color:var(--muted);font-size:18px;cursor:pointer;font-weight:800}
+/* split labels */
+#splitLabels{position:absolute;top:118px;bottom:140px;right:0;left:0;z-index:3;display:flex;align-items:flex-start;pointer-events:none}
+#splitLabels span{flex:1;text-align:center;font-weight:800;font-size:14px;text-shadow:0 2px 8px #000}
+#splitLabels .mid{position:absolute;top:0;bottom:0;right:50%;width:2px;background:rgba(255,255,255,.25)}
+.grid{display:grid;grid-template-columns:1fr;gap:14px;margin-top:14px}
+@media(min-width:900px){.grid{grid-template-columns:380px 1fr}}
+.card{background:var(--card);border:1px solid var(--line);border-radius:20px;padding:18px}
+h2{font-size:18px;margin:0 0 12px;font-weight:800}
+.seg{display:flex;background:var(--card2);border-radius:12px;padding:4px;margin-bottom:12px}
+.seg button{flex:1;border:0;background:transparent;color:var(--muted);font:inherit;font-weight:700;padding:7px;border-radius:9px;cursor:pointer}
+.seg button.on{background:#24314f;color:var(--ink)}
+.field{margin-bottom:10px}
+.field label{display:block;font-size:14px;font-weight:700}
+.field small{display:block;color:var(--muted);font-size:12.5px;margin-bottom:3px}
+.field input{width:100%;font:inherit;font-size:19px;font-weight:800;padding:8px 12px;border:1px solid var(--line);border-radius:12px;background:var(--card2);color:var(--ink)}
+.res{display:grid;gap:8px;margin-top:12px}
+.r{border-radius:12px;padding:9px 12px;border-right:4px solid;background:var(--card2)}
+.r b{display:block;font-size:16px}.r span{font-size:14px;color:var(--muted)}
+.r.ok{border-color:var(--ok)}.r.warn{border-color:var(--warn)}.r.bad{border-color:var(--bad)}
+.effects{display:grid;gap:10px}
+@media(min-width:640px){.effects{grid-template-columns:1fr 1fr}}
+.eff{display:flex;gap:12px;background:var(--card2);border-radius:14px;padding:12px}
+.eff .ic{flex:none;width:40px;height:40px;border-radius:12px;display:grid;place-items:center;font-size:21px;background:#0d1426}
+.eff b{display:block}.eff p{margin:0;font-size:14px;color:var(--muted)}
+.explain{display:grid;grid-template-columns:1fr;gap:10px}
+@media(min-width:760px){.explain{grid-template-columns:repeat(3,1fr)}}
+.explain div{background:var(--card2);border-radius:14px;padding:12px 14px}
+.explain b{display:block;font-size:15.5px}.explain p{margin:0;color:var(--muted);font-size:14px}
+.legend{display:grid;grid-template-columns:1fr;gap:8px}
+@media(min-width:640px){.legend{grid-template-columns:1fr 1fr}}
+.legend div{display:flex;gap:10px;align-items:flex-start;font-size:14px}
+.legend i{flex:none;width:14px;height:14px;border-radius:50%;margin-top:5px}
+.legend span{color:var(--muted)}
+.tips{display:grid;grid-template-columns:1fr;gap:10px}
+@media(min-width:700px){.tips{grid-template-columns:repeat(3,1fr)}}
+.tips div{display:flex;gap:10px;background:var(--card2);border-radius:14px;padding:12px;font-size:14px}
+.tips i{font-style:normal;font-size:22px}
+.note{font-size:13px;color:var(--muted);margin-top:14px;border:1px solid var(--line);border-radius:14px;padding:12px 14px}
+.mt{margin-top:14px}
+body{padding-bottom:74px}
+#intro{position:absolute;inset:0;z-index:8;background:rgba(9,13,24,.9);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);display:flex;align-items:center;justify-content:center;padding:14px;transition:.5s;overflow:auto}
+#intro.hide{opacity:0;pointer-events:none}
+.ibox{width:100%;max-width:420px;background:var(--card);border:1px solid var(--line);border-radius:20px;padding:18px}
+.ibox h2{margin:0 0 2px;font-size:21px;font-weight:800}
+.ibox .isub{color:var(--muted);font-size:13.5px;margin-bottom:12px}
+.frow{display:flex;gap:8px}
+.ibox .field{flex:1}
+.ibox .field input{font-size:18px}
+.cgrid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px}
+.cgrid button{border:1px solid var(--line);background:var(--card2);color:var(--muted);font:inherit;font-size:13px;font-weight:700;padding:10px 6px;border-radius:12px;cursor:pointer;line-height:1.5}
+.cgrid button.on{border-color:rgba(52,211,153,.6);background:rgba(52,211,153,.12);color:#a7f3d0}
+#go{width:100%;border:0;cursor:pointer;margin-top:4px;padding:13px;border-radius:14px;font:inherit;font-weight:800;font-size:17px;color:#04291c;background:linear-gradient(135deg,#34d399,#06b6d4);box-shadow:0 10px 30px -8px rgba(52,211,153,.5)}
+#introErr{color:#fca5a5;font-size:13px;min-height:20px;margin-top:4px}
+#tourbar.warn{border-color:rgba(248,113,113,.55)}
+#tourbar.warn #tourtext{color:#fecaca}
+#tourSkip{position:absolute;bottom:10px;left:14px;border:0;background:transparent;color:var(--muted);font:inherit;font-size:12.5px;font-weight:700;cursor:pointer;text-decoration:underline}
+#endscreen{position:absolute;inset:0;z-index:8;background:rgba(9,13,24,.88);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);display:flex;align-items:center;justify-content:center;padding:14px;opacity:0;pointer-events:none;transition:.4s;overflow:auto}
+#endscreen.show{opacity:1;pointer-events:auto}
+.ebox{width:100%;max-width:440px;background:var(--card);border:1px solid var(--line);border-radius:22px;padding:20px;text-align:center;position:relative}
+.ebox h2{margin:0;font-size:22px;font-weight:800}
+.ebox .esub{color:var(--muted);font-size:14px;margin:4px 0 12px}
+.paybig{font-size:14px;background:var(--card2);border-radius:12px;padding:9px 11px;margin-bottom:10px;color:#ffe9a8;font-weight:700}
+.gains{display:grid;gap:6px;margin-bottom:12px}
+.gains div{font-size:13.5px;background:var(--card2);border-radius:12px;padding:8px 12px;text-align:right}
+.stats{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px}
+.stats div{background:var(--card2);border-radius:14px;padding:10px 6px}
+.stats b{display:block;font-size:19px;color:var(--accent)}
+.stats span{font-size:12px;color:var(--muted)}
+.bigcta{display:block;text-decoration:none;padding:14px;border-radius:15px;font-weight:800;font-size:17px;color:#04291c;background:linear-gradient(135deg,#34d399,#06b6d4);box-shadow:0 10px 30px -8px rgba(52,211,153,.5)}
+.erow{display:flex;gap:8px;margin-top:10px}
+.erow button{flex:1;border:1px solid var(--line);background:var(--card2);color:var(--ink);font:inherit;font-weight:700;font-size:13.5px;padding:9px;border-radius:12px;cursor:pointer}
+#endX{position:absolute;top:10px;left:12px;border:0;background:transparent;color:var(--muted);font-size:19px;cursor:pointer;font-weight:800}
+.ewhy{font-size:12.5px;color:var(--muted);margin-top:10px}
+#ctabar{position:fixed;bottom:0;right:0;left:0;z-index:50;padding:10px 12px calc(10px + env(safe-area-inset-bottom));background:rgba(8,12,22,.92);-webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);border-top:1px solid var(--line);transform:translateY(110%);transition:.4s}
+#ctabar.show{transform:none}
+#ctabar a{display:flex;justify-content:center;align-items:center;gap:8px;text-decoration:none;padding:12px;border-radius:14px;font-weight:800;font-size:16px;color:#04291c;background:linear-gradient(135deg,#34d399,#06b6d4)}
+.note.credit{opacity:.75;font-size:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>الدهون <em>المخفية</em> جوّا جسمك</h1>
+  <p class="lead">جسم شفاف ثلاثي الأبعاد بقلب بينبض ورئتين بيتنفسوا. لفّه بإصبعك، كبوس على أي عضو ليشرحلك عن حاله، ونزّل الوزن بالشريط لتشوف الدهون الصفرا كيف بتدوب.</p>
+
+  <div id="viewer">
+    <div id="loading">عم يتجهز الجسم…</div>
+    <div id="intro">
+      <div class="ibox">
+        <h2>دعنا نُريك ما يحدث داخل جسمك 👇</h2>
+        <div class="isub">ثلاثة أرقام فقط، ولا نحتفظ بأي بيانات — كل شيء يبقى على جهازك.</div>
+        <div class="seg" id="isex"><button data-v="m" class="on">رجل</button><button data-v="f">امرأة</button></div>
+        <div class="frow">
+          <div class="field"><label>العمر</label><input id="iage" type="number" inputmode="numeric" value="40" min="18" max="90"></div>
+          <div class="field"><label>الوزن (كغ)</label><input id="iw" type="number" inputmode="decimal" placeholder="90" min="40" max="250" step="0.1"></div>
+        </div>
+        <div class="frow">
+          <div class="field"><label>الطول (سم)</label><input id="ih" type="number" inputmode="decimal" placeholder="170" min="130" max="215"></div>
+          <div class="field"><label>محيط الخصر (سم)</label><input id="iwaist" type="number" inputmode="decimal" placeholder="100" min="55" max="190"></div>
+        </div>
+        <div class="field"><small>📏 محيط الخصر: لُفَّ شريط القياس حول بطنك عند مستوى السرّة وأنت واقف ومرتخي البطن.</small></div>
+        <div class="field" style="margin-bottom:4px"><label>ما أكثر ما يزعجك؟</label></div>
+        <div class="cgrid" id="complaint">
+          <button data-c="belly" class="on">🟡 الكرش والمظهر</button>
+          <button data-c="breath">🫁 نفَس قصير وتعب</button>
+          <button data-c="snore">😴 شخير ونوم متقطع</button>
+          <button data-c="health">🩺 التحاليل والصحة</button>
+        </div>
+        <button id="go">أرني ما يحدث داخل جسمي ←</button>
+        <div id="introErr"></div>
+      </div>
+    </div>
+    <div id="endscreen">
+      <div class="ebox">
+        <button id="endX">✕</button>
+        <h2>هذا الفرق الذي ينتظرك 🎯</h2>
+        <div class="esub">بخطة واقعية، من دون حرمان، وبمتابعة أخصائية تغذية</div>
+        <div class="paybig" id="payLine"></div>
+        <div class="gains" id="gains"></div>
+        <div class="stats">
+          <div><b id="endKg">-</b><span>نزول مقترح</span></div>
+          <div><b id="endM">-</b><span>المدة الواقعية</span></div>
+          <div><b id="endWaist">-</b><span>محيط الخصر</span></div>
+          <div><b id="endHeart">-</b><span>الدهون حول القلب</span></div>
+        </div>
+        <a class="bigcta ctaLink" href="#">ابدأ رحلتك مع أخصائية التغذية ←</a>
+        <div class="erow"><button id="replay">▶ أعد الجولة</button><button id="exploreBtn">🔍 استكشف أعضاءك</button></div>
+        <div class="ewhy">أرقام تقديرية للتوعية — الخطة الفعلية تُبنى مع الأخصائية حسب حالتك.</div>
+      </div>
+    </div>
+    <div class="chips">
+      <button class="chip mode" data-mode="tour">▶ جولة</button>
+      <button class="chip mode" data-mode="split">قبل / بعد</button>
+      <button class="chip mode" data-mode="section">مقطع عرضي</button>
+      <span class="sep"></span>
+      <button class="chip on" data-view="front">من قدّام</button>
+      <button class="chip" data-view="side">من الجنب</button>
+      <button class="chip" data-view="heart">القلب</button>
+      <button class="chip" data-view="liver">الكبد</button>
+      <button class="chip" data-view="belly">البطن</button>
+      <span class="sep"></span>
+      <button class="chip on" id="rot">دوران</button>
+      <button class="chip on" id="tSkin">الجلد</button>
+      <button class="chip on" id="tLung">الرئة</button>
+      <button class="chip on" id="tBone">العظام</button>
+      <button class="chip on" id="tLab">الأسماء</button>
+    </div>
+    <div id="labels"></div>
+    <div id="splitLabels" style="display:none"><span>اليوم</span><span id="splitAfterL">بعد</span><span class="mid"></span></div>
+    <div id="ocard"><button id="ocardX">✕</button><b id="ocardT"></b><p id="ocardB"></p></div>
+    <div id="tourbar"><button id="tourX">✕</button><div id="tourtext"></div><div id="tourdots"></div><button id="tourSkip">تخطَّ إلى النتيجة ←</button></div>
+    <div class="hud">
+      <div class="status" id="status"></div>
+      <div class="top"><b>جرّب: نزّل من وزنك</b><span class="big" id="lossKg">0 كيلو</span></div>
+      <input id="loss" type="range" min="-10" max="20" step="1" value="0" aria-label="نسبة نزول الوزن">
+      <div class="sub" id="lossTxt"></div>
+    </div>
+  </div>
+
+  <div class="grid">
+    <section class="card">
+      <h2>قياساتك</h2>
+      <div class="seg" id="sex"><button data-v="m" class="on">رجل</button><button data-v="f">امرأة</button></div>
+      <div class="field"><label>الوزن (كيلو)</label><input id="w" type="number" inputmode="decimal" value="93.5" min="30" max="250" step="0.1"></div>
+      <div class="field"><label>الطول (سم)</label><input id="h" type="number" inputmode="decimal" value="170" min="120" max="220"></div>
+      <div class="field"><label>محيط الخصر (سم)</label><small>قيسه بشريط قياس حوالين البطن عند السرّة، وأنت واقف ومرتاح</small><input id="waist" type="number" inputmode="decimal" value="104" min="50" max="200"></div>
+      <div class="res" id="res"></div>
+    </section>
+
+    <section class="card">
+      <h2>شو بصير بجسمك لما تنزّل من وزنك؟</h2>
+      <div class="effects" id="effects"></div>
+      <h2 class="mt">شو عم تشوف بالرسم؟</h2>
+      <div class="legend">
+        <div><i style="background:#fbbf24;box-shadow:0 0 8px #fbbf24"></i><p><b>الحبيبات الصفرا</b> <span>= الدهون المخفية. بتلف القلب وبتغطي الأمعاء وبتحيط بالكلى.</span></p></div>
+        <div><i style="background:#a8202f"></i><p><b>القلب</b> <span>بينبض: الأذينتين بتنقبض الأول وبعدها البطينين، متل الحقيقة.</span></p></div>
+        <div><i style="background:#8b3a26"></i><p><b>الكبد</b> <span>لونه الطبيعي غامق، وبيفتح ويتبقّع لما يصير "كبد دهني".</span></p></div>
+        <div><i style="background:#f1cf7f"></i><p><b>الثرب (الشحم)</b> <span>غشاء دهني متل المريول نازل عالأمعاء، وعليه أوعية دموية صغيرة.</span></p></div>
+        <div><i style="background:#ffc23d;opacity:.6"></i><p><b>الحافة الصفرا للجسم</b> <span>= الدهون تحت الجلد، اللي بتمسكها بإيدك.</span></p></div>
+        <div><i style="background:#4a5fb0"></i><p><b>الأزرق</b> <span>أوردة بترجّع الدم، والأحمر شرايين بتوزعه. وجرّب "مقطع عرضي" لتشوف البطن متل صورة الطبقي المحوري.</span></p></div>
+      </div>
+    </section>
+  </div>
+
+  <section class="card mt">
+    <h2>ليش الدهون المخفية أخطر من غيرها؟</h2>
+    <div class="explain">
+      <div><b>🔍 مخبّاية</b><p>ما بتشوفها ولا بتمسكها. ممكن يكون وزنك مقبول، وجوّاك دهون كتير حول الأعضاء.</p></div>
+      <div><b>⚠️ نشيطة</b><p>بتفرز مواد بتسبب التهاب، وبترفع السكر والضغط والكوليسترول، وبتتعب القلب.</p></div>
+      <div><b>✅ بتنزل بسرعة</b><p>هي أول دهون بيحرقها الجسم لما تتحرك وتخفف أكل. حتى 5% من وزنك بتفرق.</p></div>
+    </div>
+  </section>
+
+  <section class="card mt">
+    <h2>كيف بتنزّلها؟</h2>
+    <div class="tips">
+      <div><i>🚶</i><span><b>امشي كل يوم</b> نص ساعة بخطوة سريعة.</span></div>
+      <div><i>🏋️</i><span><b>تمارين قوة</b> مرتين أو تلاتة بالأسبوع لتحافظ على عضلاتك.</span></div>
+      <div><i>🍞</i><span><b>خفف السكر والخبز الأبيض</b> والمشروبات الغازية والعصير المحلّى.</span></div>
+      <div><i>🥚</i><span><b>بروتين بكل وجبة</b> وخضرا كتير.</span></div>
+      <div><i>😴</i><span><b>نام 7 لـ 8 ساعات</b>، قلة النوم بتزيد دهون البطن.</span></div>
+      <div><i>📏</i><span><b>قيس خصرك</b> كل أسبوعين، أهم من رقم الميزان.</span></div>
+    </div>
+  </section>
+
+  <p class="note">⚠️ <b>للتوعية فقط، مو تشخيص.</b> الجسم والأعضاء مرسومين ثلاثي الأبعاد بشكل توضيحي مقرّب من التشريح الحقيقي، والأرقام تقديرات مبنية على محيط الخصر ونسبته لطولك. القياس الدقيق للدهون المخفية بيكون بجهاز InBody أو DEXA، والأفضل تراجع طبيب أو أخصائي تغذية، خاصة إذا عندك سكر أو ضغط.</p>
+<p class="note credit">المصادر التشريحية المرجعية: Z-Anatomy و BodyParts3D (DBCLS) — CC BY-SA 4.0. الرسم هنا توضيحي مبسّط ومبنيّ إجرائياً على هذه المراجع.</p>
+</div>
+<div id="ctabar"><a class="ctaLink" href="#">🍏 ابدأ رحلتك مع أخصائية التغذية — احجز مكانك</a></div>
+<script>/*APP*/</script>
+</body>
+</html>
