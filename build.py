@@ -40,6 +40,9 @@ def main(argv):
     assert "/*APP*/" in tpl, "template.html lost its /*APP*/ marker"
     html = tpl.replace("/*APP*/", js, 1)
     out.write_text(html, encoding="utf-8")
+    if out == OUT:                      # publish directory for Netlify (netlify.toml: publish = "dist")
+        dist = ROOT / "dist"; dist.mkdir(exist_ok=True)
+        (dist / "index.html").write_text(html, encoding="utf-8")
     size = out.stat().st_size
     print("wrote %s  (%.1f KB, js %.1f KB%s)" % (out, size / 1024, len(js) / 1024, "" if minify else ", dev"))
     if size > MAX_BYTES:

@@ -1,0 +1,9 @@
+# Netlify: the site is a single offline HTML file built by `python3 build.py` into dist/index.html
+[build]
+  publish = "dist"
+  command = "npm ci && python3 build.py"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    Cache-Control = "public, max-age=0, must-revalidate"
