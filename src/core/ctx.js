@@ -99,7 +99,7 @@ controls.enableDamping = true;
 controls.dampingFactor = 0.08;
 controls.enablePan = false;
 controls.minDistance = 4;
-controls.maxDistance = 30;
+controls.maxDistance = 34;
 controls.target.set(0, -0.1, 0);
 controls.autoRotate = true;
 controls.autoRotateSpeed = 0.55;

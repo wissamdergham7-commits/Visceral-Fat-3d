@@ -22,14 +22,23 @@ export const CARDS = {
 };
 const FOCUS = { heart: P(0.4, 1.5, 0.8), liver: P(-0.6, -0.3, 0.8), omentum: P(0, -2.4, 1.6), lungs: P(-1.6, 1.9, 0.5), colon: P(0, -2.6, 1), airway: null, kidney: P(1.25, -1.45, -1.1), stomach: P(1.2, -0.5, 0.6), pancreas: P(0.4, -1.2, -0.5) };
 /* organs that are only readable from a specific direction (retroperitoneal kidneys: approach from the patient's left-back) */
-const FOCUS_POSE = { kidney: [P(4.6, -0.6, -4.6), P(1.25, -1.45, -1.1)], pancreas: [P(0.5, -1.2, -10.5), P(0.4, -1.5, -0.3)] };
+const FOCUS_POSE = {
+  kidney: [P(4.6, -0.6, -4.6), P(1.25, -1.45, -1.1)], pancreas: [P(0.5, -1.2, -10.5), P(0.4, -1.5, -0.3)],
+  heart: [P(2.6, 3, 10.8), P(0.35, 1.55, 0.5)], epifat: [P(2.6, 3, 10.8), P(0.35, 1.55, 0.5)],
+  liver: [P(-5, 2.3, 11.6), P(-0.6, 0, 0.4)], lungs: [P(0, 1.4, 11.5), P(0, 0.9, 0)], diaphragm: [P(3, -1, 9), P(0, -0.4, 0)],
+  omentum: [P(0.9, -0.5, 14.6), P(0, -2.2, 0.7)], colon: [P(0.9, -0.5, 14.6), P(0, -2.2, 0.7)], si: [P(0.9, -0.5, 14.6), P(0, -2.2, 0.7)],
+  stomach: [P(2.4, -0.9, 5.6), P(1.2, -0.75, 0.3)], spleen: [P(3.5, -1.5, 8), P(0.5, -1.2, 0.3)],
+  aorta: [P(2.5, -2.5, 9), P(0, -2.2, -0.5)], vein: [P(2.5, -2.5, 9), P(0, -2.2, -0.5)],
+  airway: () => { const a = C.anchors.pharynxPos || P(0, 7.75, -0.2); return [a.clone().add(P(4, 1, 6.5)), a.clone()]; },
+};
 
 let C, hooks;
 export function showCard(key, point) {
   const c = CARDS[key]; if (!c) return;
   C.state.focusKey = key;
   $('ocardT').textContent = c[0]; $('ocardB').textContent = c[1]; $('ocard').classList.add('show');
-  if (FOCUS_POSE[key]) flyPose(FOCUS_POSE[key][0], FOCUS_POSE[key][1]);
+  const pose = FOCUS_POSE[key];
+  if (pose) { const [p, t] = typeof pose === 'function' ? pose() : pose; flyPose(p, t); }
   else flyTo(point ? point.clone() : P(0, 0, 0));
 }
 export function hideCard() { C.state.focusKey = null; $('ocard').classList.remove('show'); }

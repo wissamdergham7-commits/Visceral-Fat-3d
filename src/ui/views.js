@@ -6,13 +6,15 @@ export const VIEWS = {
   front: [P(0, 0.2, 20), P(0, -0.1, 0)], side: [P(18.5, 0.6, 2.5), P(0, -0.2, 0)],
   heart: [P(2.6, 3, 10.8), P(0.35, 1.55, 0.5)], liver: [P(-5, 2.3, 11.6), P(-0.6, 0, 0.4)],
   belly: [P(0.9, -0.5, 14.6), P(0, -2.2, 0.7)], section: [P(0.25, 10.5, 5.2), P(0, -2.4, 0.2)],
-  full: [P(0, 2.4, 27), P(0, 2.2, 0)],
+  full: [P(0, 3.1, 32.5), P(0, 2.9, 0)],
   /* physiology stations */
-  bp: [P(3.4, 3.4, 9.2), P(0.45, 2.35, 0.1)],
-  breath: [P(5.2, -0.6, 10.4), P(0.2, 0.35, 0)],
-  snore: () => { const a = C.anchors.pharynxPos || P(0, 7.4, 0.3); return [a.clone().add(P(4.6, 1.1, 6.2)), a.clone()]; },
+  /* the physiology panel docks on the LEFT ~372 px, so station targets are shifted to −x (patient's right) to keep
+     the subject in the right 60 % of the frame */
+  bp: [P(1.6, 3.4, 9.6), P(-0.9, 2.3, 0.1)],
+  breath: [P(-0.4, 0.5, 12.2), P(-2.1, 0.75, 0)],
+  snore: () => { const a = C.anchors.pharynxPos || P(0, 7.75, -0.2); return [a.clone().add(P(5.4, 1.7, 8.2)), a.clone().add(P(-1.5, 0.25, 0))]; },
 };
-const VIEW_OPACITY = { front: [0.6, 0.5], side: [0.6, 0.5], heart: [0.1, 0.12], liver: [0.18, 0.35], belly: [0.3, 0.5], section: [0.25, 0.2], full: [0.6, 0.5], bp: [0.1, 0.1], breath: [0.12, 0.65], snore: [0.15, 0.2] };
+const VIEW_OPACITY = { front: [0.6, 0.5], side: [0.6, 0.5], heart: [0.1, 0.12], liver: [0.18, 0.35], belly: [0.3, 0.5], section: [0.25, 0.2], full: [0.6, 0.5], bp: [0.1, 0.1], breath: [0.12, 0.75], snore: [0.15, 0.2] };
 
 let C, camAnim = null, hooks;
 
