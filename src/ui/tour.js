@@ -3,6 +3,7 @@ import { $ } from '../core/ctx.js';
 import { M, CMAP, PAYOFF, calc, animateSlider, cancelSliderAnim } from './panel.js';
 import { goView, setMode } from './views.js';
 import { hideCard } from './cards.js';
+import * as physiology from '../sim/physiology.js';
 
 let C, tour = null, hooks = {};
 
@@ -21,9 +22,9 @@ function steps() {
     intro: { view: 'front', dur: 8000, slider: 0, text: `${st.sex === 'm' ? 'رجل' : 'امرأة'}${M.age ? '، ' + M.age + ' سنة' : ''}، ${M.w} كغ، محيط الخصر ${M.waist} سم. هذا جسمك من الداخل. الحبيبات الصفراء دهون خفية: لديك ${lv} من 30${lv >= 15 ? ' — فوق حد الأمان' : lv >= 10 ? ' — وقد بدأت ترتفع' : ''}.` },
     cause: { view: c.view, dur: 8000, slider: null, text: cause },
     heart: { view: 'heart', dur: 7500, slider: null, text: 'وقلبك؟ ملفوف بدهون تسير في أخاديد شرايينه نفسها — يعمل أثقل مما يجب مع كل نبضة، 24 ساعة في اليوم. اقترب أكثر وسترى الصمامات تفتح وتغلق والدم يتحرك داخل الحجرات.' },
-    bp: { view: 'bp', dur: 11000, slider: null, phys: 'bp', text: `🩺 ضغط الدم: كل كيلو زائد حول الخصر يرفع الضغط قليلاً، فتنبض الشرايين أقوى وتقسو جدرانها — راقب موجة النبض الحية. ${bpTxt} (تقدير توعوي، ليس تشخيصاً)` },
-    breath: { view: 'breath', dur: 12000, slider: null, phys: 'breath', text: '🫁 النفَس: دهون البطن تدفع الحجاب الحاجز إلى الأعلى فلا تمتلئ الرئتان بالكامل — لذلك تلهث على الدرج. شاهد اختبار الدرج: كم نفَساً تحتاج اليوم… وكم ستحتاج بعد النزول.' },
-    snore: { view: 'snore', dur: 14000, slider: null, phys: 'sleep', text: '😴 الشخير: في الليل يرتخي الحلق، والدهون حول الرقبة والبطن تضيّق مجرى التنفس فيهتز النسيج ويصدر الشخير، وأحياناً ينغلق المجرى لثوانٍ ويهبط الأكسجين. مؤشراتك تقع في نطاق يرتبط عادةً بهذا. مع النزول يتّسع المجرى ويهدأ النوم. (تقدير توعوي، ليس تشخيصاً)' },
+    bp: { view: 'bp', dur: 13000, slider: null, phys: 'bp', script: [[5500, () => animateSlider(10)]], text: `🩺 ضغط الدم: كل كيلو زائد حول الخصر يرفع الضغط قليلاً، فتنبض الشرايين أقوى وتقسو جدرانها — راقب موجة النبض الحية. ${bpTxt} (تقدير توعوي، ليس تشخيصاً)` },
+    breath: { view: 'breath', dur: 17000, slider: 0, phys: 'breath', script: [[1200, () => physiology.startStairs && physiology.startStairs('today')], [9200, () => physiology.startStairs && physiology.startStairs('after')]], text: '🫁 النفَس: دهون البطن تدفع الحجاب الحاجز إلى الأعلى فلا تمتلئ الرئتان بالكامل — لذلك تلهث على الدرج. شاهد اختبار الدرج: كم نفَساً تحتاج اليوم… وكم ستحتاج بعد النزول.' },
+    snore: { view: 'snore', dur: 24000, slider: 0, phys: 'sleep', script: [[15000, () => animateSlider(12)]], text: '😴 الشخير: في الليل يرتخي الحلق، والدهون حول الرقبة والبطن تضيّق مجرى التنفس فيهتز النسيج ويصدر الشخير، وأحياناً ينغلق المجرى لثوانٍ ويهبط الأكسجين. مؤشراتك تقع في نطاق يرتبط عادةً بهذا. مع النزول يتّسع المجرى ويهدأ النوم. (تقدير توعوي، ليس تشخيصاً)' },
     warn: { view: 'front', dur: 10500, slider: -7, text: `⚠️ وماذا لو بقي كل شيء كما هو؟ هذا هو المسار الشائع خلال 5 سنوات: محيط خصرك ${M.waist} ← ${M.waist5} سم، ودهونك الخفية ${lv} ← ${M.lv5} من 30 — منطقة خطر السكري والضغط. وكلفتها ليست صحية فقط: أدوية وتحاليل مدى الحياة.` },
     path: { view: 'front', dur: 10000, slider: 'split', text: `وهذا هو الطريق الآخر — نزول ${M.kgT} كغ خلال ${M.mLo}–${M.mHi} أشهر: ${c.gain}، دهون قلبك أقل بنسبة ${M.fatDropT}%، وضغطك أدنى بنحو ${M.bpT} نقاط. أنت من يختار الطريق.` },
   };
@@ -53,13 +54,15 @@ function next() {
   if (prev && prev.phys && hooks.physHide) hooks.physHide();
   tour.i++;
   if (tour.i >= list.length) { stopTour(); showEnd(); return; }
-  const { view, text, slider, phys, dur } = list[tour.i];
+  const { view, text, slider, phys, dur, script } = list[tour.i];
+  (tour.scriptTimers || []).forEach(clearTimeout); tour.scriptTimers = [];
   if (slider === 'split') { cancelSliderAnim(); $('loss').value = 12; calc(); setMode('split'); C.state.mode = 'tour'; tour.split = true; }
   else {
     if (C.state.mode !== 'tour') C.state.mode = 'tour';
     if (slider !== null && slider !== undefined) animateSlider(slider);
     goView(view);
     if (phys && hooks.physShow) setTimeout(() => { if (tour) hooks.physShow(phys); }, 900);
+    if (script) script.forEach(([at, fn]) => tour.scriptTimers.push(setTimeout(() => { if (tour) fn(); }, at)));
   }
   const tt = $('tourtext'); tt.style.opacity = 0;
   setTimeout(() => { tt.textContent = text; tt.style.opacity = 1; }, 300);
@@ -70,7 +73,7 @@ function next() {
 export function stopTour() {
   if (!tour) return;
   const wasSplit = !!tour.split;
-  clearTimeout(tour.timer); cancelSliderAnim(); tour = null;
+  clearTimeout(tour.timer); (tour.scriptTimers || []).forEach(clearTimeout); cancelSliderAnim(); tour = null;
   if (hooks.physHide) hooks.physHide();
   $('tourbar').classList.remove('show'); $('tourbar').classList.remove('warn');
   if (C.state.mode === 'tour') {

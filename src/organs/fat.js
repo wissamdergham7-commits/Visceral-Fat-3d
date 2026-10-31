@@ -1,139 +1,481 @@
-// organs/fat.js — visceral fat: epicardial (on the heart), greater omentum (plate + lobules + vessels),
-// mesenteric (around colon & small bowel), perirenal (kidney capsules). All instanced, built twice (A/B).
-import { THREE, P, clamp, lerp, smooth, rnd, setSeed, vtube, add, LAYER } from '../core/ctx.js';
-import { palette, OrganMat, fatMat, fatColors } from '../core/style.js';
+// organs/fat.js — visceral fat, built twice (state A on layer 1, state B on layer 2):
+//   epicardial : lobules sitting ON the heart surface (heartSurf + its normal), AV / interventricular grooves first
+//   omentum    : three stacked, rippled translucent sheets hanging from the greater curvature of the stomach in front
+//                of the transverse colon, lobules packed between the layers, gastro-epiploic arcade + descending
+//                vessels (re-laid on the sheet, never rebuilt)
+//   mesentery  : fan membrane from the posterior root to the small-bowel loops (deflected behind the loops),
+//                radiating vessels + arcades, fat along the vessels first, then everywhere; omental appendices on the colon
+//   perirenal  : lobules on the kidney ellipsoid, fitted at build time to stay inside the 0.5 x 0.86 x 0.4 capsule
+// Lobules are InstancedMesh pairs (coarse / detail geometry sharing ONE instance buffer); the detail set switches with
+// hysteresis and the vessel twigs fade with camera distance. Everything is a continuous function of f: lobules grow
+// from zero scale, sheets lengthen / thicken / ripple, vessels thicken — nothing pops or rebuilds.
+// Per-frame cost: every e-independent term of the membranes is precomputed per vertex at build; the relay only does
+// a few multiplies + one table-based wall lookup per vertex, grid normals (no computeVertexNormals), and samples the
+// laid anterior sheet bilinearly for lobules and vessel rings.
+import { THREE, P, clamp, lerp, smooth, noise3, rnd, setSeed, add, LAYER } from '../core/ctx.js';
+import { palette, OrganMat, fatColors } from '../core/style.js';
+import { wallSampler } from './body.js';
 
-let C, dummy, lobuleGeo, lobuleMat;
-let epi = [], om = [], mes = [], pr = [];          // particle lists sorted by threshold
-let setA, setB, lastA = -1, lastB = -1;
-let omVessels = [], lastOmVesselF = -1;
+// (soft lobule finish merged into core/style.js as GLOSS.fatSoft)
 
+const N = { epi: 760, om: 900, mes: 900, pr: 360 };          // lobule instances per state (<= 2920 total)
+const OM = { cols: 60, rows: 44 }, OMD = { cols: 30, rows: 22 }, MES = { cols: 40, rows: 28 };   // anterior / deep omentum sheets, mesentery
+const NEAR_IN = 15, NEAR_OUT = 17, TWIG_FAR = 18, TWIG_NEAR = 14;   // LOD hysteresis + twig fade (camera distance to the trunk)
+const TRUNK = P(0, -0.6, 0.6);
+const CAPSULE = [0.5, 0.86, 0.4], KIDNEY = [0.4, 0.74, 0.3];
+
+let C, dummy, lobMat, twigMat, geoLo, geoHi;
+const epi = [], om = [], mes = [], pr = [];
+let setA, setB, lastA = -1, lastKeyA = '', lastB = -1, near = null, lastNear = null;
+const detail = [], coarse = [], twigs = [];
+const _v = new THREE.Vector3(), _m = new THREE.Vector3(), _a = new THREE.Vector3(), _b = new THREE.Vector3(), _t = new THREE.Vector3(), _n1 = new THREE.Vector3(), _n2 = new THREE.Vector3(), _d = new THREE.Vector3();
+const Y_AXIS = new THREE.Vector3(0, 1, 0), Z_AXIS = new THREE.Vector3(0, 0, 1), qA = new THREE.Quaternion(), qS = new THREE.Quaternion();
 const byThr = (arr) => arr.sort((a, b) => a.thr - b.thr);
+/** polynomial smooth minimum (continuous wall clamp) */
+const smin = (a, b, k) => { const h = clamp(0.5 + 0.5 * (b - a) / k, 0, 1); return lerp(b, a, h) - k * h * (1 - h); };
+const smax = (a, b, k) => -smin(-a, -b, k);
+/** align the lobule's short axis (local Y) with n, then spin it around n */
+function orient(n, spin) { qA.setFromUnitVectors(Y_AXIS, n); qS.setFromAxisAngle(Y_AXIS, spin); dummy.quaternion.copy(qA).multiply(qS); }
 
-function makeInst(count, parent, layer, key) {
-  const m = new THREE.InstancedMesh(lobuleGeo, lobuleMat, count);
-  m.count = 0; m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-  for (let i = 0; i < count; i++) m.setColorAt(i, fatColors[i % fatColors.length]);
-  parent.add(m); m.frustumCulled = false; m.layers.set(layer);
-  if (key) m.userData.key = key;
-  return m;
+/* ---------- lobule geometry + instanced pairs (coarse / detail share the instance buffer) ---------- */
+function lobuleGeo(ws, hs) {
+  const g = new THREE.SphereGeometry(1, ws, hs);
+  g.scale(1, 0.82, 0.92);
+  const pos = g.attributes.position, v = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) { v.fromBufferAttribute(pos, i); v.multiplyScalar(1 + 0.07 * noise3(v.x * 2.3, v.y * 2.3, v.z * 2.3)); pos.setXYZ(i, v.x, v.y, v.z); }
+  g.computeVertexNormals();
+  return g;
 }
-/** omentum apron surface: u across (patient left→right), v down, e = effective fat */
-function omentumSurf(u, v, e, out) {
-  const x = lerp(-1.95, 1.95, u), drop = 0.25 + 2.4 * e;
-  const y = -1.32 + 0.42 * smooth(-0.2, 1.9, x) - v * drop;
-  const z = 1.48 + 0.22 * Math.sin(Math.PI * u) + e * 0.42 * Math.sin(Math.PI * v) * Math.sin(Math.PI * u) + 0.06 * Math.sin(u * 23 + v * 5) * v;
-  return out.set(x, y, z);
+function makePair(count, parent, layer, key) {
+  const lo = new THREE.InstancedMesh(geoLo, lobMat, count), hi = new THREE.InstancedMesh(geoHi, lobMat, count);
+  lo.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  const c = new THREE.Color();
+  for (let i = 0; i < count; i++) { c.copy(fatColors[rnd() < 0.8 ? Math.floor(rnd() * 3) : 3 + Math.floor(rnd() * 2)]).multiplyScalar(0.92 + 0.14 * rnd()); lo.setColorAt(i, c); }
+  hi.instanceMatrix = lo.instanceMatrix; hi.instanceColor = lo.instanceColor;
+  for (const m of [lo, hi]) { m.count = 0; m.frustumCulled = false; m.layers.set(layer); if (key) m.userData.key = key; parent.add(m); }
+  coarse.push(lo); detail.push(hi);
+  return { lo, hi };
 }
-function makeOmentumPlate(layer) {
-  const geo = new THREE.PlaneGeometry(1, 1, 44, 34);
-  const mesh = add(geo, OrganMat(palette.omentumPlate, { transparent: true, opacity: 0.5, side: THREE.DoubleSide, depthWrite: false, roughness: 0.5, sheen: 0.8, sheenColor: new THREE.Color(palette.omentumSheen) }), C.groups.abdomen, 'omentum');
-  mesh.renderOrder = 6; mesh.layers.set(layer);
-  return { geo, mesh };
-}
-/** place instances whose threshold is below the fat level, with a soft fade-in */
-function layInst(inst, list, e, place) {
+/** place instances whose threshold is below the fat level; each one eases in from zero scale over a 0.07 window */
+function layInst(pair, list, e, place) {
   let n = 0; const lim = e * 1.05 + 0.07;
   for (const p of list) {
     if (p.thr > lim) break;
     const a = clamp((e * 1.05 - p.thr) / 0.07 + 1, 0, 1);
-    if (a <= 0.02) continue;
-    place(p, Math.pow(a, 0.6)); dummy.updateMatrix(); inst.setMatrixAt(n++, dummy.matrix);
+    if (a <= 0.01) continue;
+    place(p, Math.pow(a, 0.6)); dummy.updateMatrix(); pair.lo.setMatrixAt(n++, dummy.matrix);
   }
-  inst.count = n; inst.instanceMatrix.needsUpdate = true;
+  pair.lo.count = pair.hi.count = n; pair.lo.instanceMatrix.needsUpdate = true;
 }
-function layFat(set, f) {
-  const e = Math.pow(f, 1.35), grow = 0.42 + 0.88 * f, v = new THREE.Vector3();
-  layInst(set.epi, epi, e, (p, a) => {
-    dummy.position.copy(p.p).addScaledVector(p.n, p.s * grow * 0.35);
-    dummy.rotation.set(p.rot, p.rot * 1.3, 0); dummy.scale.setScalar(p.s * grow * 1.15 * a);
-  });
-  const pos = set.om.geo.attributes.position;
-  for (let r = 0; r <= 34; r++) for (let c = 0; c <= 44; c++) { omentumSurf(c / 44, r / 34, e, v); pos.setXYZ(r * 45 + c, v.x, v.y, v.z); }
-  pos.needsUpdate = true; set.om.geo.computeVertexNormals(); set.om.geo.computeBoundingSphere();
-  set.om.mesh.material.opacity = 0.18 + 0.5 * e;
-  layInst(set.omf, om, e, (p, a) => {
-    omentumSurf(p.u, p.v, e, v); v.z += 0.04 + p.j * 0.08 * (0.4 + e);
-    dummy.position.copy(v); dummy.rotation.set(p.rot, p.rot * 0.7, p.rot * 1.9); dummy.scale.setScalar(p.s * grow * a);
-  });
-  layInst(set.mes, mes, e, (p, a) => { dummy.position.copy(p.p); dummy.rotation.set(p.rot, p.rot, 0); dummy.scale.setScalar(p.s * grow * a); });
-  layInst(set.pr, pr, e, (p, a) => { dummy.position.copy(p.p); dummy.rotation.set(p.rot, 0, p.rot); dummy.scale.setScalar(p.s * grow * a); });
+
+/* ---------- deformable grid sheets ---------- */
+function makeSheet(cols, rows, mat, parent, layer, key, order, sphere) {
+  const geo = new THREE.PlaneGeometry(1, 1, cols, rows);
+  geo.attributes.position.setUsage(THREE.DynamicDrawUsage); geo.attributes.normal.setUsage(THREE.DynamicDrawUsage);
+  geo.boundingSphere = sphere.clone();                                   // conservative, never recomputed
+  const mesh = add(geo, mat, parent, key); mesh.renderOrder = order; mesh.layers.set(layer); mesh.frustumCulled = false;
+  return { geo, mesh, cols, rows, pos: geo.attributes.position.array, nor: geo.attributes.normal.array, st: null };
 }
-/** small vessels running down the omentum (state A only; rebuilt when f moves by > 0.03) */
-function omentumVessels(e) {
-  if (Math.abs(e - lastOmVesselF) < 0.03) return;
-  lastOmVesselF = e;
-  omVessels.forEach((m) => { m.geometry.dispose(); C.groups.abdomen.remove(m); }); omVessels.length = 0;
-  if (e < 0.08) return;
-  const v = new THREE.Vector3();
-  for (let k = 0; k < 4; k++) {
-    const u0 = 0.18 + 0.2 * k, pts = [];
-    for (let i = 0; i <= 14; i++) {
-      const t = i / 14 * 0.92;
-      omentumSurf(clamp(u0 + 0.13 * Math.sin(t * 5 + k * 2) + 0.05 * Math.sin(t * 11), 0.02, 0.98), t, e, v);
-      pts.push(v.clone().setZ(v.z + 0.05));
+/** grid normals n = cross(d/dv, d/du) (faces +z for a sheet whose u runs +x and v runs down) */
+function gridNormals(sh) {
+  const { cols, rows, pos, nor } = sh, W = cols + 1;
+  for (let r = 0; r <= rows; r++) {
+    const r0 = Math.max(0, r - 1) * W, r1 = Math.min(rows, r + 1) * W;
+    for (let c = 0; c <= cols; c++) {
+      const a = (r * W + Math.min(cols, c + 1)) * 3, b = (r * W + Math.max(0, c - 1)) * 3, dn = (r1 + c) * 3, up = (r0 + c) * 3;
+      const ux = pos[a] - pos[b], uy = pos[a + 1] - pos[b + 1], uz = pos[a + 2] - pos[b + 2];
+      const vx = pos[dn] - pos[up], vy = pos[dn + 1] - pos[up + 1], vz = pos[dn + 2] - pos[up + 2];
+      let nx = vy * uz - vz * uy, ny = vz * ux - vx * uz, nz = vx * uy - vy * ux;
+      const l = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
+      const i = (r * W + c) * 3; nor[i] = nx / l; nor[i + 1] = ny / l; nor[i + 2] = nz / l;
     }
-    const m = add(vtube(pts, (u) => 0.017 * (1 - 0.4 * u), 60, 6), OrganMat(palette.omentumVessel, { roughness: 0.3, clearcoat: 0.9 }), C.groups.abdomen, 'omentum');
-    m.layers.set(LAYER.A); omVessels.push(m);
   }
+  sh.geo.attributes.position.needsUpdate = true; sh.geo.attributes.normal.needsUpdate = true;
+}
+/** bilinear sample of a laid sheet: position and (anterior-facing) normal at (u, v) */
+function sampleGrid(sh, u, v, outP, outN) {
+  const { cols, rows, pos, nor } = sh, W = cols + 1;
+  const fu = clamp(u, 0, 1) * cols, fv = clamp(v, 0, 1) * rows;
+  const c = Math.min(cols - 1, fu | 0), r = Math.min(rows - 1, fv | 0), du = fu - c, dv = fv - r;
+  const i00 = (r * W + c) * 3, i10 = i00 + 3, i01 = i00 + W * 3, i11 = i01 + 3;
+  const w00 = (1 - du) * (1 - dv), w10 = du * (1 - dv), w01 = (1 - du) * dv, w11 = du * dv;
+  outP.set(pos[i00] * w00 + pos[i10] * w10 + pos[i01] * w01 + pos[i11] * w11,
+    pos[i00 + 1] * w00 + pos[i10 + 1] * w10 + pos[i01 + 1] * w01 + pos[i11 + 1] * w11,
+    pos[i00 + 2] * w00 + pos[i10 + 2] * w10 + pos[i01 + 2] * w01 + pos[i11 + 2] * w11);
+  if (outN) {
+    outN.set(nor[i00] * w00 + nor[i10] * w10 + nor[i01] * w01 + nor[i11] * w11,
+      nor[i00 + 1] * w00 + nor[i10 + 1] * w10 + nor[i01 + 1] * w01 + nor[i11 + 1] * w11,
+      nor[i00 + 2] * w00 + nor[i10 + 2] * w10 + nor[i01 + 2] * w01 + nor[i11 + 2] * w11).normalize();
+    if (outN.z < 0) outN.negate();
+  }
+  return outP;
+}
+
+/* ---------- vessel strands: fixed topology tubes whose rings are re-laid on a carrier sheet ---------- */
+function makeStrands(spec, radial, mat, parent, layer, key, sphere) {
+  let verts = 0; for (const s of spec) verts += (s.n + 1) * (radial + 1);
+  const geo = new THREE.BufferGeometry();
+  const pos = new THREE.BufferAttribute(new Float32Array(verts * 3), 3), nor = new THREE.BufferAttribute(new Float32Array(verts * 3), 3);
+  pos.setUsage(THREE.DynamicDrawUsage); nor.setUsage(THREE.DynamicDrawUsage);
+  geo.setAttribute('position', pos); geo.setAttribute('normal', nor);
+  const idx = []; let base = 0;
+  for (const s of spec) {
+    for (let i = 0; i < s.n; i++) for (let j = 0; j < radial; j++) {
+      const a = base + i * (radial + 1) + j, b = a + radial + 1;
+      idx.push(a, b, a + 1, b, b + 1, a + 1);
+    }
+    base += (s.n + 1) * (radial + 1);
+    s.P = Array.from({ length: s.n + 1 }, () => new THREE.Vector3()); s.N = Array.from({ length: s.n + 1 }, () => new THREE.Vector3());
+  }
+  geo.setIndex(idx); geo.boundingSphere = sphere.clone();
+  const mesh = add(geo, mat, parent, key); mesh.layers.set(layer); mesh.frustumCulled = false;
+  return { geo, mesh, spec, radial };
+}
+/** rings on the carrier sheet `sh` at the strand's (a, b) parameters; rScale thickens, lift raises them over the lobules */
+function layStrands(S, sh, rScale, lift) {
+  const pos = S.geo.attributes.position.array, nor = S.geo.attributes.normal.array, R = S.radial;
+  let k = 0;
+  for (const s of S.spec) {
+    const n = s.n;
+    for (let i = 0; i <= n; i++) sampleGrid(sh, s.pts[i].a, s.pts[i].b, s.P[i], s.N[i]);
+    for (let i = 0; i <= n; i++) {
+      const r = lerp(s.r0, s.r1, i / n) * rScale, p = s.P[i];
+      p.addScaledVector(s.N[i], r * 0.55 + 0.008 + lift);                   // half embedded in the membrane (+ lift)
+      _t.subVectors(s.P[Math.min(n, i + 1)], s.P[Math.max(0, i - 1)]).normalize();
+      _n1.copy(s.N[i]).addScaledVector(_t, -s.N[i].dot(_t)).normalize(); _n2.crossVectors(_t, _n1);
+      for (let j = 0; j <= R; j++) {
+        const a = j / R * Math.PI * 2, ca = Math.cos(a), sa = Math.sin(a);
+        _d.copy(_n1).multiplyScalar(ca).addScaledVector(_n2, sa);
+        pos[k] = p.x + _d.x * r; pos[k + 1] = p.y + _d.y * r; pos[k + 2] = p.z + _d.z * r; nor[k] = _d.x; nor[k + 1] = _d.y; nor[k + 2] = _d.z; k += 3;
+      }
+    }
+  }
+  S.geo.attributes.position.needsUpdate = true; S.geo.attributes.normal.needsUpdate = true;
+}
+
+/* ---------- greater omentum carrier (u across patient right -> left, v down the apron, k = layer 0 deep … 2 anterior) ----------
+ * Static per-vertex terms (everything that does not depend on e or the body) are precomputed; the dynamic part
+ * (apron length, layer gap, ripple amplitude, drape, wall clamp) costs a few multiplies + one wall lookup. */
+const OMS = 9;   // floats per vertex: v, x, top, zTop, rip, yA, yB, cobble, lateralDrape
+function omStatic(u, v, k, S, j) {
+  const x0 = lerp(-2.05, 2.05, u);
+  S[j] = v;
+  S[j + 1] = x0 * (1 - 0.2 * v * v - 0.05 * v);                                   // rounded free edge
+  S[j + 2] = -1.68 + 0.5 * Math.min(((x0 - 1) / 1.1) ** 2, 0.55);                  // greater curvature (lowest at x ~ 1), colon front at the sides
+  S[j + 3] = 1.3 + 0.38 * (1 - smooth(0.8, 2.0, Math.abs(x0 - 0.1)));              // in front of the transverse colon, back at the flanks
+  S[j + 4] = 0.55 * Math.sin(u * 13 + v * 4 + k * 1.7) + 0.3 * Math.sin(u * 29 - v * 8 + k * 0.8) + 0.25 * Math.sin(v * 15 + u * 6 + k * 2.3);
+  S[j + 5] = 0.6 * Math.sin(u * 21 + k * 1.1) * v;
+  S[j + 6] = 0.04 * Math.sin(u * 9 + v * 3) * v;
+  S[j + 7] = k >= 1.5 ? (0.55 * noise3(u * 29, v * 21, 1.3) + 0.45 * noise3(u * 70, v * 50, 2.1)) * smooth(1.5, 2, k) : 0;   // cobbled fatty apron
+  S[j + 8] = 0.06 * Math.sin(Math.PI * u);
+}
+/* front surface of the colon tube as a continuous (x, y) lookup (falls away at slope 2 outside the footprint), built once
+ * from colonCurve: the apron and its lobules drape in FRONT of the transverse colon instead of cutting through it */
+const CL = { x0: -2.4, x1: 2.4, nx: 48, y0: -4.3, y1: -0.9, ny: 34 };
+let colonLUT = null;
+function buildColonLUT(colonCurve) {
+  const pts = colonCurve.getSpacedPoints(600), R = 0.43, g = colonLUT = new Float32Array((CL.nx + 1) * (CL.ny + 1));
+  for (let j = 0; j <= CL.ny; j++) for (let i = 0; i <= CL.nx; i++) {
+    const x = lerp(CL.x0, CL.x1, i / CL.nx), y = lerp(CL.y0, CL.y1, j / CL.ny); let zf = -9;
+    for (const c of pts) { const d2 = (x - c.x) ** 2 + (y - c.y) ** 2; zf = Math.max(zf, d2 < R * R ? c.z + Math.sqrt(R * R - d2) : c.z - 2 * (Math.sqrt(d2) - R)); }
+    g[j * (CL.nx + 1) + i] = zf;
+  }
+}
+function colonFront(x, y) {
+  const fx = clamp((x - CL.x0) / (CL.x1 - CL.x0) * CL.nx, 0, CL.nx - 1e-3), fy = clamp((y - CL.y0) / (CL.y1 - CL.y0) * CL.ny, 0, CL.ny - 1e-3);
+  const i = fx | 0, j = fy | 0, du = fx - i, dv = fy - j, W = CL.nx + 1, a = j * W + i;
+  return (colonLUT[a] * (1 - du) + colonLUT[a + 1] * du) * (1 - dv) + (colonLUT[a + W] * (1 - du) + colonLUT[a + W + 1] * du) * dv;
+}
+/** dynamic part: e = effective fat, xs = lateral fit to a narrow body, wall(y, x) = inner fascia z */
+function omDyn(S, j, e, k, xs, wall, out) {
+  const v = S[j], x = S[j + 1] * xs, amp = (0.02 + 0.22 * e) * (0.35 + 0.65 * v);
+  const y = S[j + 2] - v * (0.95 + 1.85 * e) + amp * S[j + 5] + S[j + 6];        // apron length: thin veil … down to the pelvis
+  const bl = smooth(-2.2, -2.9, y);                                             // drapes onto the bowel below the transverse colon
+  let z = S[j + 3] + (1.12 + 0.55 * e - S[j + 3]) * bl + S[j + 8] + (k - 1) * (0.05 + 0.1 * e) * smooth(-1.9, -2.6, y) + amp * S[j + 4] + (0.04 + 0.12 * e) * S[j + 7];
+  z = smax(z, colonFront(x, y) + 0.02, 0.05);                                   // in front of the colon (layers fuse over it)
+  out.set(x, y, smin(z, wall(y, x) - 0.04 - 0.1 * e, 0.06));                    // never through the abdominal wall (wins)
+  return out;
+}
+const lateralFit = (b) => clamp((b.W - b.d - 0.3) / 2.05, 0.6, 1);
+function precomputeOm(sh, k) {
+  const S = sh.st = new Float32Array((sh.cols + 1) * (sh.rows + 1) * OMS);
+  for (let r = 0; r <= sh.rows; r++) for (let c = 0; c <= sh.cols; c++) omStatic(c / sh.cols, r / sh.rows, k, S, (r * (sh.cols + 1) + c) * OMS);
+}
+function layOm(sh, k, e, xs, wall) {
+  const S = sh.st, pos = sh.pos, n = (sh.cols + 1) * (sh.rows + 1);
+  for (let i = 0, j = 0; i < n; i++, j += OMS) { omDyn(S, j, e, k, xs, wall, _v); pos[i * 3] = _v.x; pos[i * 3 + 1] = _v.y; pos[i * 3 + 2] = _v.z; }
+  gridNormals(sh);
+}
+/** anchor for other modules: point on the omentum apron (direct evaluation; body defaults to state A) */
+let wsKey = '', ws = null;
+function wallFor(b) { const key = `${b.W}|${b.Wz}|${b.d}|${b.bulge}`; if (key !== wsKey) { ws = wallSampler(b); wsKey = key; } return ws; }
+const _S = new Float32Array(OMS);
+function omentumSurf(u, v, e, k, out, body) {
+  const b = body || C.state.body;
+  omStatic(u, v, k, _S, 0);
+  return omDyn(_S, 0, e, k, lateralFit(b), wallFor(b), out || new THREE.Vector3());
+}
+
+/* ---------- mesentery carrier: s along the root (duodenojejunal flexure -> caecum), t from the root (0) to the rim (1) ---------- */
+const MSS = 4;   // floats per vertex: x, y, z0 (incl. deflection behind the bowel), ruffle*t
+function mesBase(s, t, out) {
+  const rx0 = lerp(0.4, -1.3, s), ry0 = lerp(-1.5, -3.3, s);                       // root on the posterior wall
+  const th = lerp(1.1, -2.55, s), rimX = -0.35 + 1.95 * Math.cos(th), rimY = -2.65 + 1.2 * Math.sin(th);
+  return out.set(lerp(rx0, rimX, t), lerp(ry0, rimY, t), lerp(-0.92, 0.5 + 0.25 * Math.sin(th), Math.pow(t, 0.8)));
+}
+const mesRuffle = (s, t) => t * (Math.sin(s * 26 + t * 3) + 0.5 * Math.sin(s * 47 - t * 6));
+/** per-vertex statics incl. a deflection field that keeps the membrane behind the small-bowel loops */
+function precomputeMes(sh, bowel, colon) {
+  const W = sh.cols + 1, H = sh.rows + 1, S = sh.st = new Float32Array(W * H * MSS), dz = new Float32Array(W * H), p = new THREE.Vector3();
+  const clearance = (q, m) => { const R2 = m * m, C2 = (m + 0.215) ** 2; for (const b of bowel) if (q.distanceToSquared(b) < R2) return false; for (const b of colon) if (q.distanceToSquared(b) < C2) return false; return true; };
+  for (let r = 0; r < H; r++) for (let c = 0; c < W; c++) {
+    const s = c / sh.cols, t = r / sh.rows, i = r * W + c; mesBase(s, t, p);
+    S[i * MSS] = p.x; S[i * MSS + 1] = p.y; S[i * MSS + 2] = p.z; S[i * MSS + 3] = mesRuffle(s, t);
+    const margin = 0.155 + 0.04 + 0.2 * t; let d = 0;                               // + room for the ruffle (<= 0.195 t)
+    while (d > -0.9 && !clearance(_v.set(p.x, p.y, p.z + d), margin)) d -= 0.03;
+    dz[i] = d;
+  }
+  const tmp = new Float32Array(W * H);
+  for (let pass = 0; pass < 2; pass++) {                                            // dilate (keep the push) then smooth
+    for (let r = 0; r < H; r++) for (let c = 0; c < W; c++) {
+      let acc = 0, n = 0, mn = 0;
+      for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) { const rr = r + dr, cc = c + dc; if (rr < 0 || cc < 0 || rr >= H || cc >= W) continue; const v = dz[rr * W + cc]; acc += v; n++; mn = Math.min(mn, v); }
+      tmp[r * W + c] = pass === 0 ? mn : acc / n;
+    }
+    dz.set(tmp);
+  }
+  for (let i = 0; i < W * H; i++) S[i * MSS + 2] += dz[i];
+}
+/** direct evaluation (build-time checks): bilinear statics + ruffle at fat level e */
+function mesPoint(sh, s, t, e, out) {
+  const { cols, rows, st: S } = sh, W = cols + 1, fu = clamp(s, 0, 1) * cols, fv = clamp(t, 0, 1) * rows;
+  const c = Math.min(cols - 1, fu | 0), r = Math.min(rows - 1, fv | 0), du = fu - c, dv = fv - r;
+  const i00 = (r * W + c) * MSS, i10 = i00 + MSS, i01 = i00 + W * MSS, i11 = i01 + MSS, w00 = (1 - du) * (1 - dv), w10 = du * (1 - dv), w01 = (1 - du) * dv, w11 = du * dv;
+  const g = (o) => S[i00 + o] * w00 + S[i10 + o] * w10 + S[i01 + o] * w01 + S[i11 + o] * w11;
+  return out.set(g(0), g(1), g(2) + (0.03 + 0.1 * e) * g(3));
+}
+function layMes(sh, e) {
+  const S = sh.st, pos = sh.pos, n = (sh.cols + 1) * (sh.rows + 1), amp = 0.03 + 0.1 * e;
+  for (let i = 0, j = 0; i < n; i++, j += MSS) { pos[i * 3] = S[j]; pos[i * 3 + 1] = S[j + 1]; pos[i * 3 + 2] = S[j + 2] + amp * S[j + 3]; }
+  gridNormals(sh);
+}
+
+/* ---------- strand layouts (sheet parameter space: a = across, b = down) ---------- */
+const OM_TRUNKS = [0.1, 0.26, 0.42, 0.58, 0.74, 0.9];
+const omTrunkU = (k, t) => OM_TRUNKS[k] + 0.05 * Math.sin(t * 4.5 + k * 1.3) + 0.03 * Math.sin(t * 11 + k);
+function omentumStrands() {
+  const main = [], twig = [];
+  main.push({ n: 30, r0: 0.021, r1: 0.021, pts: Array.from({ length: 31 }, (_, i) => { const u = lerp(0.04, 0.96, i / 30); return { a: u, b: 0.035 + 0.015 * Math.sin(u * 17) }; }) });
+  OM_TRUNKS.forEach((u0, k) => {
+    main.push({ n: 24, r0: 0.018, r1: 0.008, pts: Array.from({ length: 25 }, (_, i) => { const t = i / 24; return { a: omTrunkU(k, t), b: 0.04 + 0.9 * t }; }) });
+    for (let j = 0; j < 3; j++) {
+      const t0 = 0.2 + 0.26 * j, side = (j + k) % 2 ? 1 : -1;
+      twig.push({ n: 8, r0: 0.009, r1: 0.0035, pts: Array.from({ length: 9 }, (_, i) => { const q = i / 8; return { a: omTrunkU(k, t0) + side * (0.07 + 0.04 * j) * q + 0.02 * Math.sin(q * 7 + j), b: 0.04 + 0.9 * (t0 + 0.15 * q) }; }) });
+    }
+  });
+  return { main, twig };
+}
+const MES_BRANCH = [0.07, 0.213, 0.357, 0.5, 0.643, 0.787, 0.93];
+const mesBranchS = (k, t) => MES_BRANCH[k] + 0.025 * Math.sin(t * 5 + k * 1.7);
+function mesenteryStrands() {
+  const main = [], twig = [];
+  MES_BRANCH.forEach((s0, k) => {
+    main.push({ n: 22, r0: 0.021, r1: 0.009, pts: Array.from({ length: 23 }, (_, i) => { const t = lerp(0.02, 0.92, i / 22); return { a: mesBranchS(k, t), b: t }; }) });
+    if (k < MES_BRANCH.length - 1) main.push({ n: 10, r0: 0.01, r1: 0.01, pts: Array.from({ length: 11 }, (_, i) => { const q = i / 10; return { a: lerp(mesBranchS(k, 0.78), mesBranchS(k + 1, 0.78), q), b: 0.78 + 0.08 * Math.sin(Math.PI * q) }; }) });
+    for (const t0 of [0.3, 0.55]) {
+      const side = k % 2 ? 1 : -1;
+      twig.push({ n: 6, r0: 0.008, r1: 0.0035, pts: Array.from({ length: 7 }, (_, i) => { const q = i / 6; return { a: mesBranchS(k, t0) + side * 0.045 * q, b: t0 + 0.16 * q + 0.02 * Math.sin(q * 9) }; }) });
+    }
+  });
+  return { main, twig };
+}
+
+/* ---------- state relay ---------- */
+function layFat(set, f, body) {
+  const e = Math.pow(f, 1.35), grow = 0.5 + 0.6 * f, wall = wallSampler(body), xs = lateralFit(body);
+  /* epicardial: on the surface, flattened along the normal, one third embedded */
+  layInst(set.epi, epi, e, (p, a) => {
+    const sc = p.s * grow * a;
+    dummy.position.copy(p.p).addScaledVector(p.n, sc * 0.27);
+    dummy.quaternion.copy(p.q); dummy.scale.set(sc, sc * 0.5, sc);
+  });
+  /* omentum sheets (anterior 60x44, deep 30x22) + vessels + lobules */
+  set.om.forEach((sh, k) => { layOm(sh, k, e, xs, wall); sh.mesh.material.opacity = [0.12, 0.14, 0.2][k] + [0.25, 0.3, 0.7][k] * e; });
+  const ant = set.om[2], vScale = 0.7 + 0.55 * e, gap = 0.05 + 0.1 * e;
+  layStrands(set.omV, ant, vScale, 0.03 * e);                                     // lifted over the lobule layer as fat grows
+  layStrands(set.omT, ant, vScale, 0.03 * e);
+  layInst(set.omf, om, e, (p, a) => {
+    const sc = p.s * grow * a;
+    sampleGrid(ant, p.u, p.v, _v, _m); _v.z += (p.k - 2) * gap * smooth(-1.9, -2.6, _v.y) + p.zj * 0.04;
+    const zc = colonFront(_v.x, _v.y) + 0.3 * sc; if (_v.z < zc) _v.z = zc;
+    const zw = wall(_v.y, _v.x) - 0.05 - sc * 0.7; if (_v.z > zw) _v.z = zw;
+    dummy.position.copy(_v); orient(_m, p.spin); dummy.scale.set(sc, sc * 0.62, sc);
+  });
+  /* mesentery sheet + vessels + lobules */
+  layMes(set.mes, e);
+  set.mes.mesh.material.opacity = 0.14 + 0.3 * e;
+  layStrands(set.mesV, set.mes, vScale, 0.015 * e);
+  layStrands(set.mesT, set.mes, vScale, 0.015 * e);
+  layInst(set.mesf, mes, e, (p, a) => {
+    const sc = p.sz * grow * a;
+    if (p.onColon) { _v.copy(p.p); dummy.quaternion.copy(p.q); }
+    else { sampleGrid(set.mes, p.s, p.t, _v, _m); _v.addScaledVector(_m, p.side * (0.03 + sc * 0.55 + 0.06 * e * p.j)); orient(_m, p.spin); }
+    const zw = wall(_v.y, _v.x) - 0.05 - sc * 0.7; if (_v.z > zw) _v.z = zw;
+    dummy.position.copy(_v); dummy.scale.set(sc, sc * 0.8, sc);
+  });
+  /* perirenal: on the kidney ellipsoid, fitted inside the capsule */
+  layInst(set.pr, pr, e, (p, a) => {
+    const sc = p.s * (0.55 + 0.75 * f) * a;
+    dummy.position.copy(p.p).addScaledVector(p.n, sc * 0.1);
+    dummy.quaternion.copy(p.q); dummy.scale.set(sc, sc * 0.75, sc);
+  });
 }
 
 export function build(ctx) {
   C = ctx; dummy = ctx.dummy;
+  const ab = ctx.groups.abdomen;
   const { heartSurf, ventG, colonCurve, siCurve, kidneyPos } = ctx.anchors;
-  lobuleGeo = new THREE.IcosahedronGeometry(1, 2); lobuleGeo.scale(1, 0.82, 0.9);
-  lobuleMat = fatMat();
+  geoLo = lobuleGeo(6, 4); geoHi = lobuleGeo(9, 6);
+  lobMat = OrganMat(palette.white, Object.assign({ sheenColor: new THREE.Color(palette.fatSheen), emissive: new THREE.Color(palette.fatEmissive), emissiveIntensity: 0.12, bumpScale: 0.25 }, GLOSS.fatSoft));
+  const sheetMat = () => OrganMat(palette.omentumPlate, { transparent: true, opacity: 0.4, side: THREE.DoubleSide, depthWrite: false, roughness: 0.5, sheen: 0.8, sheenColor: new THREE.Color(palette.omentumSheen), emissiveIntensity: 0.05 });
+  const vesselMat = OrganMat(palette.omentumVessel, { roughness: 0.28, clearcoat: 0.9, bumpScale: 0.1, emissiveIntensity: 0.3, sheen: 0.3 });
+  twigMat = OrganMat(palette.omentumVessel, { roughness: 0.28, clearcoat: 0.9, bumpScale: 0.1, emissiveIntensity: 0.3, sheen: 0.3, transparent: true, opacity: 1 });
+  const abSphere = new THREE.Sphere(P(0, -2.8, 0.6), 4.2);
   setSeed(3001);
 
-  /* epicardial: 42% in the AV groove ring, 22% along the interventricular grooves, rest in 16 clusters */
-  const clusters = [];
-  for (let i = 0; i < 16; i++) clusters.push({ th: rnd() * Math.PI * 2, ph: 0.5 + rnd() * 2.4, t: rnd() });
-  for (let i = 0; i < 700; i++) {
-    const r = rnd(); let th, ph, thr = rnd();
-    if (r < 0.42) { th = rnd() * Math.PI * 2; ph = 1.12 + (rnd() - 0.5) * 0.26; thr *= 0.55; }
-    else if (r < 0.64) { ph = 0.55 + rnd() * 2.2; th = (rnd() < 0.7 ? 0.1 - ph * 0.06 : Math.PI + 0.2) + (rnd() - 0.5) * 0.28; thr = thr * 0.7 + 0.05; }
-    else { const c = clusters[i % clusters.length]; th = c.th + (rnd() - 0.5) * 0.5; ph = clamp(c.ph + (rnd() - 0.5) * 0.4, 0.4, 3); thr = 0.3 + 0.7 * (c.t * 0.6 + rnd() * 0.4); }
-    epi.push({ th, ph, thr, s: 0.07 + rnd() * 0.07, rot: rnd() * 6 });
-  }
-  byThr(epi).forEach((p) => { p.p = heartSurf(p.th, p.ph, 1); p.n = p.p.clone().normalize(); });
-  const epiA = makeInst(epi.length, ventG, LAYER.A, 'epifat'), epiB = makeInst(epi.length, ventG, LAYER.B);
-
-  /* omentum lobules */
-  for (let i = 0; i < 1500; i++) om.push({ u: rnd(), v: rnd(), j: rnd(), thr: (rnd() * 0.92 + 0.02) * 0.55 + rnd() * 0.45, s: 0.085 + rnd() * 0.1, rot: rnd() * 6 });
-  byThr(om);
-  const omA = makeOmentumPlate(LAYER.A), omB = makeOmentumPlate(LAYER.B);
-  const omfA = makeInst(om.length, C.groups.abdomen, LAYER.A, 'omentum'), omfB = makeInst(om.length, C.groups.abdomen, LAYER.B);
-
-  /* mesenteric: 30% hugging the colon, 70% around small-bowel loops */
-  for (let i = 0; i < 700; i++) {
-    const onColon = rnd() < 0.3;
-    mes.push({ onColon, u: rnd(), a: rnd() * Math.PI * 2, d: onColon ? 1.08 : 0.24 + rnd() * 0.16, thr: rnd(), s: onColon ? 0.08 + rnd() * 0.07 : 0.07 + rnd() * 0.08, rot: rnd() * 6 });
-  }
-  byThr(mes);
-  { const p = new THREE.Vector3(), tg = new THREE.Vector3(), n = new THREE.Vector3(), b = new THREE.Vector3(), up = new THREE.Vector3(0.3, 1, 0.2).normalize();
-    mes.forEach((q) => {
-      const cv = q.onColon ? colonCurve : siCurve;
-      cv.getPointAt(q.u, p); cv.getTangentAt(q.u, tg); n.crossVectors(tg, up).normalize(); b.crossVectors(tg, n).normalize();
-      const d = q.onColon ? 0.37 * q.d : q.d;
-      q.p = p.clone().add(n.multiplyScalar(Math.cos(q.a) * d)).add(b.multiplyScalar(Math.sin(q.a) * d));
-    }); }
-  const mesA = makeInst(mes.length, C.groups.abdomen, LAYER.A, 'omentum'), mesB = makeInst(mes.length, C.groups.abdomen, LAYER.B);
-
-  /* perirenal capsules */
-  kidneyPos.forEach((kp) => {
-    for (let i = 0; i < 160; i++) {
-      const dir = P(rnd() - 0.5, rnd() - 0.5, rnd() - 0.5).normalize();
-      pr.push({ p: kp.clone().add(dir.multiply(P(0.5, 0.86, 0.4))), thr: rnd(), s: 0.08 + rnd() * 0.07, rot: rnd() * 6 });
+  /* ---- epicardial: grooves first (lowest thresholds), then the RV free wall, then the LV and apex ---- */
+  const LAD = (ph) => 0.1 - ph * 0.06, PIV = Math.PI + 0.2, AV = 1.12;
+  for (let i = 0; i < N.epi; i++) {
+    const r = rnd(), q = Math.pow(rnd(), 1.3), side = rnd() < 0.5 ? -1 : 1;
+    let th, ph, thr, s;
+    if (r < 0.36) {            // atrioventricular groove ring (spreads mostly downward over the ventricles)
+      th = rnd() * Math.PI * 2; ph = AV + (side < 0 ? -(0.04 + 0.12 * q) : 0.05 + 0.38 * q) + (rnd() - 0.5) * 0.04;
+      thr = 0.02 + 0.32 * q + 0.1 * rnd(); s = 0.07 + 0.045 * rnd() + 0.03 * (1 - q);
+    } else if (r < 0.6) {      // interventricular grooves (anterior LAD line 70 %, posterior 30 %)
+      ph = 0.65 + rnd() * 2.2; const ant = rnd() < 0.7;
+      th = (ant ? LAD(ph) : PIV) + side * (0.06 + 0.42 * q) / Math.max(Math.sin(ph), 0.35);
+      thr = 0.06 + 0.36 * q + 0.1 * rnd(); s = 0.065 + 0.04 * rnd() + 0.025 * (1 - q);
+    } else if (r < 0.84) {     // right-ventricular free wall (between the LAD and the RCA): the thick pad
+      ph = 1.3 + rnd() * 1.3; th = -0.25 - rnd() * 1.5; thr = 0.3 + 0.45 * rnd(); s = 0.055 + 0.05 * rnd();
+    } else {                   // left-ventricular lateral wall and apex
+      ph = 1.4 + rnd() * 1.6; th = 0.45 + rnd() * 1.7; thr = 0.5 + 0.5 * rnd(); s = 0.05 + 0.045 * rnd();
     }
+    epi.push({ th, ph: clamp(ph, 0.5, 3.0), thr: clamp(thr, 0.01, 1), s, spin: rnd() * 6.3 });
+  }
+  byThr(epi).forEach((p) => {
+    p.p = heartSurf(p.th, p.ph, 1);
+    _a.copy(heartSurf(p.th + 2e-3, p.ph, 1)).sub(p.p); _b.copy(heartSurf(p.th, p.ph + 2e-3, 1)).sub(p.p);
+    p.n = new THREE.Vector3().crossVectors(_a, _b).normalize(); if (p.n.dot(p.p) < 0) p.n.negate();
+    orient(p.n, p.spin); p.q = dummy.quaternion.clone();
   });
-  byThr(pr);
-  const prA = makeInst(pr.length, C.groups.abdomen, LAYER.A, 'kidney'), prB = makeInst(pr.length, C.groups.abdomen, LAYER.B);
+  const epiA = makePair(epi.length, ventG, LAYER.A, 'epifat'), epiB = makePair(epi.length, ventG, LAYER.B, 'epifat');
 
-  setA = { epi: epiA, om: omA, omf: omfA, mes: mesA, pr: prA };
-  setB = { epi: epiB, om: omB, omf: omfB, mes: mesB, pr: prB };
+  /* ---- omentum: lobules along the arcade and the descending vessels first, packed between the layers; kept off the
+   *      vessel lines (the vessels run in the grooves between lobules); only anterior lobules over the colon zone ---- */
+  for (let i = 0; i < N.om; i++) {
+    let u = 0.03 + 0.94 * rnd(); const v = rnd(), t = clamp((v - 0.04) / 0.9, 0, 1);
+    let prox = 1, nearest = -1;
+    OM_TRUNKS.forEach((_, k) => { const d = Math.abs(u - omTrunkU(k, t)); if (d / 0.07 < prox) { prox = d / 0.07; nearest = k; } });
+    if (v < 0.1) prox = Math.min(prox, v / 0.1);
+    if (nearest >= 0 && v > 0.08) { const tu = omTrunkU(nearest, t), d = u - tu; if (Math.abs(d) < 0.03) u = tu + Math.sign(d || 1) * (0.03 + 0.025 * rnd()); }
+    const k = v < 0.25 || rnd() < 0.72 ? 1.8 + rnd() * 0.4 : rnd() * 1.6;
+    const s = 0.06 + 0.1 * Math.pow(rnd(), 1.6);                                     // wide size range: big lobes break the texture
+    om.push({ u, v, k, thr: clamp(0.02 + 0.42 * v + 0.3 * prox + 0.3 * rnd() - 0.08 + 1.2 * (s - 0.06), 0.01, 1), s, spin: rnd() * 6.3, zj: rnd() - 0.5 });
+  }
+  byThr(om);
+  const omA = [], omB = [];
+  for (let k = 0; k < 3; k++) {
+    const g = k === 2 ? OM : OMD;
+    omA.push(makeSheet(g.cols, g.rows, sheetMat(), ab, LAYER.A, 'omentum', 6 + k, abSphere)); omB.push(makeSheet(g.cols, g.rows, sheetMat(), ab, LAYER.B, 'omentum', 6 + k, abSphere));
+    precomputeOm(omA[k], k); precomputeOm(omB[k], k);
+  }
+  const os = omentumStrands(), os2 = omentumStrands();
+  const omVA = makeStrands(os.main, 6, vesselMat, ab, LAYER.A, 'omentum', abSphere), omVB = makeStrands(os2.main, 6, vesselMat, ab, LAYER.B, 'omentum', abSphere);
+  const omTA = makeStrands(os.twig, 5, twigMat, ab, LAYER.A, 'omentum', abSphere), omTB = makeStrands(os2.twig, 5, twigMat, ab, LAYER.B, 'omentum', abSphere);
+  twigs.push(omTA.mesh, omTB.mesh);
+  const omfA = makePair(om.length, ab, LAYER.A, 'omentum'), omfB = makePair(om.length, ab, LAYER.B, 'omentum');
+
+  /* ---- mesentery: fan membrane deflected behind the loops; lobules near the vessels / root first, rejected when they
+   *      would sit inside a small-bowel tube at any fat level; omental appendices on the colon ---- */
+  buildColonLUT(colonCurve);
+  const bowel = siCurve.getSpacedPoints(700), colon = colonCurve.getSpacedPoints(300);
+  const clearOfBowel = (p, r) => { const R2 = (0.155 + r) ** 2, C2 = (0.37 + r) ** 2; for (const q of bowel) if (p.distanceToSquared(q) < R2) return false; for (const q of colon) if (p.distanceToSquared(q) < C2) return false; return true; };
+  const mesMatA = sheetMat(), mesMatB = sheetMat();
+  const mesA = makeSheet(MES.cols, MES.rows, mesMatA, ab, LAYER.A, 'mesentery', 5, abSphere), mesB = makeSheet(MES.cols, MES.rows, mesMatB, ab, LAYER.B, 'mesentery', 5, abSphere);
+  precomputeMes(mesA, bowel, colon); mesB.st = mesA.st;
+  { const p = new THREE.Vector3(), tg = new THREE.Vector3(), n = new THREE.Vector3(), b = new THREE.Vector3(), up = new THREE.Vector3(0.3, 1, 0.2).normalize(), q0 = new THREE.Vector3(), q1 = new THREE.Vector3();
+    for (let i = 0; i < N.mes; i++) {
+      if (rnd() < 0.2) {
+        const u = 0.02 + 0.82 * rnd(), a = rnd() * Math.PI * 2, sz = 0.065 + 0.06 * rnd();
+        colonCurve.getPointAt(u, p); colonCurve.getTangentAt(u, tg); n.crossVectors(tg, up).normalize(); b.crossVectors(tg, n).normalize();
+        const nn = n.clone().multiplyScalar(Math.cos(a)).addScaledVector(b, Math.sin(a));
+        if (nn.z < -0.3 && rnd() < 0.7) { i--; continue; }        // mostly on the anterior face of the colon
+        const spin = rnd() * 6.3; orient(nn, spin);
+        mes.push({ onColon: true, p: p.clone().addScaledVector(nn, 0.36), n: nn, q: dummy.quaternion.clone(), thr: 0.25 + 0.75 * rnd(), sz, spin });
+      } else {
+        let s, t, side, j, sz, ok = false, tries = 0;
+        while (!ok && tries++ < 16) {
+          s = 0.03 + 0.94 * rnd(); t = 0.06 + 0.9 * rnd(); side = rnd() < 0.5 ? -1 : 1; j = rnd(); sz = 0.065 + 0.08 * rnd();
+          /* the lobule centre at both fat extremes (normal offset included) must clear the bowel tubes */
+          mesPoint(mesA, s, t, 0.1, q0); mesPoint(mesA, s + 2e-3, t, 0.1, _a).sub(q0); mesPoint(mesA, s, t + 2e-3, 0.1, _b).sub(q0);
+          n.crossVectors(_a, _b).normalize(); if (n.z < 0) n.negate();
+          const scMax = sz * 1.1;
+          q0.addScaledVector(n, side * (0.03 + scMax * 0.55 * 0.4)); mesPoint(mesA, s, t, 1, q1).addScaledVector(n, side * (0.03 + scMax * 0.55 + 0.06 * j));
+          ok = clearOfBowel(q0, 0.4 * scMax) && clearOfBowel(q1, 0.5 * scMax);
+        }
+        if (!ok) continue;
+        let prox = 1; for (const k of MES_BRANCH) prox = Math.min(prox, Math.abs(s - k) / 0.06);
+        prox = Math.min(prox, Math.abs(t - 0.78) / 0.05);
+        mes.push({ onColon: false, s, t, side, j, thr: clamp(0.02 + 0.45 * prox + 0.2 * clamp(t / 0.35, 0, 1) + 0.33 * rnd(), 0.01, 1), sz, spin: rnd() * 6.3 });
+      }
+    } }
+  byThr(mes);
+  const ms = mesenteryStrands(), ms2 = mesenteryStrands();
+  const mesVA = makeStrands(ms.main, 6, vesselMat, ab, LAYER.A, 'mesentery', abSphere), mesVB = makeStrands(ms2.main, 6, vesselMat, ab, LAYER.B, 'mesentery', abSphere);
+  const mesTA = makeStrands(ms.twig, 5, twigMat, ab, LAYER.A, 'mesentery', abSphere), mesTB = makeStrands(ms2.twig, 5, twigMat, ab, LAYER.B, 'mesentery', abSphere);
+  twigs.push(mesTA.mesh, mesTB.mesh);
+  const mesfA = makePair(mes.length, ab, LAYER.A, 'mesentery'), mesfB = makePair(mes.length, ab, LAYER.B, 'mesentery');
+
+  /* ---- perirenal: on the kidney ellipsoid (0.4 x 0.74 x 0.3), posterior face and poles first; every lobule is
+   *      shrunk at build until all its vertices (coarse + detail geometry, maximum scale) lie inside the capsule ---- */
+  { const M = new THREE.Matrix4(), vv = new THREE.Vector3(), sc3 = new THREE.Vector3();
+    kidneyPos.forEach((kp, ki) => {
+      const sgn = ki === 0 ? -1 : 1;
+      for (let i = 0; i < N.pr / 2; i++) {
+        const dir = P(rnd() - 0.5, rnd() - 0.5, rnd() - 0.5).normalize();
+        const rk = 1 / Math.sqrt((dir.x / KIDNEY[0]) ** 2 + (dir.y / KIDNEY[1]) ** 2 + (dir.z / KIDNEY[2]) ** 2);
+        const n = P(dir.x / KIDNEY[0] ** 2, dir.y / KIDNEY[1] ** 2, dir.z / KIDNEY[2] ** 2).normalize().applyAxisAngle(Z_AXIS, -sgn * 0.15);
+        const p = dir.clone().multiplyScalar(rk).applyAxisAngle(Z_AXIS, -sgn * 0.15).add(kp);
+        const post = dir.z < 0 ? 0 : 1, pole = 1 - Math.abs(dir.y), spin = rnd() * 6.3;
+        orient(n, spin);
+        const lob = { p, n, q: dummy.quaternion.clone(), thr: clamp(0.06 + 0.3 * post + 0.25 * pole * rnd() + 0.45 * rnd(), 0.01, 1), s: 0.05 + 0.03 * rnd(), spin };
+        for (let it = 0; it < 12; it++) {                                           // fit: max normalised capsule radius of all vertices <= 0.98
+          const sc = lob.s * 1.3; let mx = 0;
+          M.compose(_v.copy(p).addScaledVector(n, sc * 0.1), lob.q, sc3.set(sc, sc * 0.75, sc));
+          for (const g of [geoLo, geoHi]) { const pos = g.attributes.position; for (let k = 0; k < pos.count; k++) { vv.fromBufferAttribute(pos, k).applyMatrix4(M).sub(kp).applyAxisAngle(Z_AXIS, sgn * 0.15); mx = Math.max(mx, Math.sqrt((vv.x / CAPSULE[0]) ** 2 + (vv.y / CAPSULE[1]) ** 2 + (vv.z / CAPSULE[2]) ** 2)); } }
+          if (mx <= 0.98) break;
+          lob.s *= 0.98 / mx;
+        }
+        pr.push(lob);
+      }
+    }); }
+  byThr(pr);
+  const prA = makePair(pr.length, ab, LAYER.A, 'kidney'), prB = makePair(pr.length, ab, LAYER.B, 'kidney');
+
+  setA = { epi: epiA, om: omA, omV: omVA, omT: omTA, omf: omfA, mes: mesA, mesV: mesVA, mesT: mesTA, mesf: mesfA, pr: prA };
+  setB = { epi: epiB, om: omB, omV: omVB, omT: omTB, omf: omfB, mes: mesB, mesV: mesVB, mesT: mesTB, mesf: mesfB, pr: prB };
+  ctx.anchors.omentumSurf = omentumSurf;
 }
 
 export function update(f, t, phys) {
-  if (Math.abs(f - lastA) > 1e-4) { layFat(setA, f); omentumVessels(Math.pow(f, 1.35)); lastA = f; }
-  if (C.state.bVersion !== lastB) { layFat(setB, C.state.fB); lastB = C.state.bVersion; }
+  const st = C.state, b = st.body;
+  const keyA = `${b.W.toFixed(3)}|${b.Wz.toFixed(3)}|${b.d.toFixed(3)}|${b.bulge.toFixed(3)}`;
+  if (Math.abs(f - lastA) > 1e-4 || keyA !== lastKeyA) { layFat(setA, f, b); lastA = f; lastKeyA = keyA; }
+  if (st.bVersion !== lastB) { layFat(setB, st.fB, st.bodyB); lastB = st.bVersion; }
+  /* LOD: detail lobules switch with hysteresis (in at 15, out at 17); twigs fade out between 14 and 18 */
+  const dist = C.camera.position.distanceTo(TRUNK);
+  if (near === null) near = dist < NEAR_IN; else if (near && dist > NEAR_OUT) near = false; else if (!near && dist < NEAR_IN) near = true;
+  if (near !== lastNear) { for (const m of detail) m.visible = near; for (const m of coarse) m.visible = !near; lastNear = near; }
+  const op = smooth(TWIG_FAR, TWIG_NEAR, dist);
+  if (op !== twigMat.opacity) { twigMat.opacity = op; const vis = op > 0.01; for (const m of twigs) m.visible = vis; }
 }

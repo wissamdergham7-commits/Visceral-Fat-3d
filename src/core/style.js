@@ -46,6 +46,10 @@ export const palette = {
   aortaWallStiff: 0xA8202A, veinWall: 0x3E63B3, pulmonaryTrunk: 0x4A5FB0,
   // sleep scene accents (UI + 3D)
   nightTint: 0x1B2A55, soundWave: 0x7FD1FF, apneaFlag: 0xFF5A6E, spo2Ok: 0x34D399, spo2Low: 0x60A5FA,
+  airwayLumen: 0x0B1226, pharynxDeep: 0x7A2E35, traceGrid: 0x2A3A5E, figureInk: 0xE8EEF9, arousalFlag: 0xFFD166,
+  // merged from the organ agents' STYLE-REQUEST blocks
+  oesophagus: 0xDFA394, centralTendon: 0xEBE2D8,
+  white: 0xFFFFFF,   // neutral base for vertex-coloured materials (the per-vertex colour carries the palette tone)
   // UI tones used inside 3D (section drawing)
   sectionSkin: '#d99c70', sectionSkinEdge: '#8a5a3a', sectionFat: '#f2b61f', sectionMuscle: '#9c4634',
   sectionCavity: '#cfa07c', sectionFatA: '#f0b01c', sectionFatB: '#f6c742', sectionFatEdge: '#c98f10',
@@ -69,6 +73,8 @@ export const GLOSS = {
   organ: { roughness: 0.34, clearcoat: 0.85, clearcoatRoughness: 0.24 },
   matte: { roughness: 0.55, clearcoat: 0.15 },
   vessel: { roughness: 0.3, clearcoat: 0.9, bumpScale: 0.3 },
+  /* packed fat lobules read as one soft tissue instead of glossy beads */
+  fatSoft: { roughness: 0.52, clearcoat: 0.35, clearcoatRoughness: 0.4, sheen: 0.9, sheenRoughness: 0.55 },
 };
 
 /* ---------- procedural textures ---------- */

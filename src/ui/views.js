@@ -25,6 +25,12 @@ export function goView(name) {
   camAnim = { t: 0, p0: cam.position.clone(), p1: p.clone(), t0: ctl.target.clone(), t1: t.clone() };
   ctl.autoRotate = false; $('rot').classList.remove('on');
 }
+/** fly to an explicit camera pose [position, target] */
+export function flyPose(p, t) {
+  const cam = C.camera, ctl = C.controls;
+  camAnim = { t: 0, p0: cam.position.clone(), p1: p.clone(), t0: ctl.target.clone(), t1: t.clone() };
+  ctl.autoRotate = false; $('rot').classList.remove('on');
+}
 /** fly to an arbitrary point, keeping the current viewing direction, at distance dist */
 export function flyTo(point, dist = 11.5) {
   const cam = C.camera, ctl = C.controls;

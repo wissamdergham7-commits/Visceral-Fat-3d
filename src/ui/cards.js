@@ -1,7 +1,7 @@
 // ui/cards.js — click-to-explain organ cards (raycast on userData.key) + camera focus.
 import { $, P } from '../core/ctx.js';
 import * as THREE from 'three';
-import { flyTo } from './views.js';
+import { flyTo, flyPose } from './views.js';
 
 export const CARDS = {
   heart: ['القلب ❤️', 'عضلة بحجم قبضة إيدك، بتضخ حوالي ٥ ليتر دم بالدقيقة. بالرسم بتشوف الأذينتين فوق والبطينين تحت، والشرايين التاجية يلي بتغذيه. الدهون الصفرا يلي لافّيته بتضغط عليه وبتلهب هالشرايين.'],
@@ -17,16 +17,20 @@ export const CARDS = {
   airway: ['مجرى التنفس 😴', 'من الأنف والفم إلى الحلق (البلعوم) ثم الحنجرة والرغامى وفروعها بالرئتين. بالليل بيرتخي الحلق، والدهون حول الرقبة والبطن بتضيّق المجرى فبيهتز النسيج الرخو وبيطلع الشخير، وأحياناً بينسدّ لثوانٍ. كل ما نزلت الدهون، كل ما اتّسع المجرى وهدأ النوم.'],
   pancreas: ['البنكرياس', 'غدة مستلقية خلف المعدة، رأسها بحضن الاثني عشر وذيلها عند الطحال. بتفرز الإنسولين. الدهون الحشوية بتخلّي الجسم يستجيب للإنسولين أقل، فبيشتغل البنكرياس أكتر وبيرتفع السكر.'],
   diaphragm: ['الحجاب الحاجز', 'عضلة التنفس الرئيسية، قبّة بين الصدر والبطن. لما تنقبض بتنزل وبتسحب الهوا للرئتين. الكرش الكبير بيدفعها لفوق وبيمنعها تنزل مداها، فبيصير النفَس قصير.'],
+  vein: ['الأوردة الكبيرة 💙', 'الوريدان الأجوفان العلوي والسفلي والأوردة الوداجية بترجّع الدم الفقير بالأوكسجين من الجسم إلى الأذين الأيمن. ما بتنبض متل الشرايين، وجدرانها رقيقة. بالليل مع انقطاع النفس بينزل الأوكسجين فبيميل لون الدم فيها للأزرق أكتر.'],
   aorta: ['الشريان الأبهر', 'أكبر شريان بالجسم، طالع من القلب وعامل قوس وبعدين نازل قدام العمود الفقري ليوزع الدم على كل الجسم. الدهون الزايدة بترفع الضغط جواته وبتقسي جدرانه.'],
 };
-const FOCUS = { heart: P(0.4, 1.5, 0.8), liver: P(-0.6, -0.3, 0.8), omentum: P(0, -2.4, 1.6), lungs: P(-1.6, 1.9, 0.5), colon: P(0, -2.6, 1), airway: null, kidney: P(1.3, -1.4, -1.2), stomach: P(1.2, -0.5, 0.6) };
+const FOCUS = { heart: P(0.4, 1.5, 0.8), liver: P(-0.6, -0.3, 0.8), omentum: P(0, -2.4, 1.6), lungs: P(-1.6, 1.9, 0.5), colon: P(0, -2.6, 1), airway: null, kidney: P(1.25, -1.45, -1.1), stomach: P(1.2, -0.5, 0.6), pancreas: P(0.4, -1.2, -0.5) };
+/* organs that are only readable from a specific direction (retroperitoneal kidneys: approach from the patient's left-back) */
+const FOCUS_POSE = { kidney: [P(4.6, -0.6, -4.6), P(1.25, -1.45, -1.1)], pancreas: [P(0.5, -1.2, -10.5), P(0.4, -1.5, -0.3)] };
 
 let C, hooks;
 export function showCard(key, point) {
   const c = CARDS[key]; if (!c) return;
   C.state.focusKey = key;
   $('ocardT').textContent = c[0]; $('ocardB').textContent = c[1]; $('ocard').classList.add('show');
-  flyTo(point ? point.clone() : P(0, 0, 0));
+  if (FOCUS_POSE[key]) flyPose(FOCUS_POSE[key][0], FOCUS_POSE[key][1]);
+  else flyTo(point ? point.clone() : P(0, 0, 0));
 }
 export function hideCard() { C.state.focusKey = null; $('ocard').classList.remove('show'); }
 
