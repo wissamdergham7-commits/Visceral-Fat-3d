@@ -178,12 +178,17 @@ export function build(ctx, h) {
   /* chips in the existing bar */
   const bar = ctx.viewer.querySelector('.chips');
   if (bar) {
-    bar.appendChild(el('<span class="sep"></span>'));
+    /* physiology chips sit right after the display-mode chips (جولة / قبل-بعد / مقطع) so they stay visible on phones,
+       where the chip bar becomes one swipeable row */
+    const anchor = bar.querySelector('[data-mode="section"]');
+    const frag = document.createDocumentFragment();
+    frag.appendChild(el('<span class="sep"></span>'));
     for (const [k, label] of [['bp', '🩺 الضغط'], ['breath', '🫁 النفَس'], ['sleep', '😴 النوم']]) {
       chips[k] = el(`<button class="chip mode" data-phys="${k}">${label}</button>`);
       chips[k].onclick = () => (current === k ? hide() : show(k));
-      bar.appendChild(chips[k]);
+      frag.appendChild(chips[k]);
     }
+    if (anchor && anchor.parentNode === bar) bar.insertBefore(frag, anchor.nextSibling); else bar.appendChild(frag);
   }
   /* buttons */
   q.breath.runToday.onclick = () => runStairs('today');

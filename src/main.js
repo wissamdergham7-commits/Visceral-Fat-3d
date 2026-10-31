@@ -103,7 +103,8 @@ window.__ready = true;
 setTimeout(() => {
   try {
     const cam = ctx.camera.clone(); cam.layers.enableAll();
-    const r = ctx.renderer.compileAsync ? ctx.renderer.compileAsync(ctx.scene, cam) : ctx.renderer.compile(ctx.scene, cam);
+    const parallel = ctx.renderer.extensions && ctx.renderer.extensions.has('KHR_parallel_shader_compile');
+    const r = parallel && ctx.renderer.compileAsync ? ctx.renderer.compileAsync(ctx.scene, cam) : ctx.renderer.compile(ctx.scene, cam);
     if (r && r.catch) r.catch(() => {});
   } catch (e) { /* warm-up is best effort */ }
 }, 1500);
