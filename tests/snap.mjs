@@ -21,7 +21,7 @@ const page = await browser.newPage({ viewport: { width: VW, height: VH }, device
 const logs = [];
 page.on('console', (m) => { if (['error', 'warning'].includes(m.type())) logs.push(`[${m.type()}] ${m.text()}`); });
 page.on('pageerror', (e) => logs.push('[pageerror] ' + e.message));
-await page.goto('file://' + path.resolve(html));
+await page.goto('file://' + path.resolve(html) + '?quality=' + (process.env.QUALITY || 'high'));
 await page.waitForFunction(() => window.__ready === true, null, { timeout: 90000 });
 await page.fill('#iw', '93.5'); await page.fill('#ih', '170'); await page.fill('#iwaist', '104');
 await page.click('#go'); await page.waitForTimeout(700);

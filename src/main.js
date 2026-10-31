@@ -48,13 +48,24 @@ physUI.build(ctx, hooks);
 
 /* ---- adaptive quality: drop pixel ratio, then bloom, if frames stay slow ---- */
 let avgMs = 16;
+/* quality start level: phones / small touch screens start at 1 (lower pixel ratio); ?quality=high|mid|low pins it
+ * (used by the screenshot tests, whose software renderer would otherwise always degrade to 0) */
+const qParam = new URLSearchParams(location.search).get('quality');
+const pinned = { high: 2, mid: 1, low: 0 }[qParam];
+const touchSmall = window.matchMedia && matchMedia('(pointer: coarse)').matches && Math.min(screen.width, screen.height) < 820;
+function applyQuality(level) {
+  const st = ctx.state, dpr = window.devicePixelRatio || 1;
+  st.perf = level;
+  ctx.renderer.setPixelRatio(level === 2 ? Math.min(dpr, 2) : level === 1 ? Math.min(dpr, touchSmall ? 1.5 : 1.3) : 1);
+  ctx.bloom.enabled = level > 0;
+}
+if (pinned !== undefined) applyQuality(pinned); else if (touchSmall) applyQuality(1);
 function perfCheck(dt) {
+  if (pinned !== undefined) return;
   avgMs = avgMs * 0.97 + dt * 1000 * 0.03;
   const st = ctx.state;
   if (avgMs > 42 && st.perf > 0) {
-    st.perf--;
-    if (st.perf === 1) ctx.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.3));
-    if (st.perf === 0) { ctx.renderer.setPixelRatio(1); ctx.bloom.enabled = false; }
+    applyQuality(st.perf - 1);
     avgMs = 20;
   }
 }
@@ -87,3 +98,12 @@ requestAnimationFrame(loop);
 $('loading').remove();
 window.__ctx = ctx;
 window.__ready = true;
+/* shader warm-up: compile every material (incl. the "before" layer used only by the split view) shortly after the first
+ * frames, so opening قبل / بعد does not stall on shader compilation */
+setTimeout(() => {
+  try {
+    const cam = ctx.camera.clone(); cam.layers.enableAll();
+    const r = ctx.renderer.compileAsync ? ctx.renderer.compileAsync(ctx.scene, cam) : ctx.renderer.compile(ctx.scene, cam);
+    if (r && r.catch) r.catch(() => {});
+  } catch (e) { /* warm-up is best effort */ }
+}, 1500);

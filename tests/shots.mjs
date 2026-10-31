@@ -9,7 +9,7 @@ import path from 'path';
 const [,, htmlPath = 'visceral-fat-3d.html', outDir = 'shots', ...flags] = process.argv;
 const quick = flags.includes('--quick');
 fs.mkdirSync(outDir, { recursive: true });
-const url = 'file://' + path.resolve(htmlPath);
+const url = 'file://' + path.resolve(htmlPath) + '?quality=' + (process.env.QUALITY || 'high');
 
 const browser = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--no-sandbox'] });
 const page = await browser.newPage({ viewport: { width: 900, height: 820 }, deviceScaleFactor: 1 });

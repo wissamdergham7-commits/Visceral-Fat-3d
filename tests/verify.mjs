@@ -15,7 +15,7 @@ const logs = [];
 page.on('console', (m) => { if (['error', 'warning'].includes(m.type())) logs.push(`[${m.type()}] ${m.text()}`); });
 page.on('pageerror', (e) => logs.push('[pageerror] ' + e.message));
 const t0 = Date.now();
-await page.goto('file://' + path.resolve(html));
+await page.goto('file://' + path.resolve(html) + '?quality=' + (process.env.QUALITY || 'high'));
 await page.waitForFunction(() => window.__ready === true, null, { timeout: 120000 });
 console.log(`ready in ${((Date.now() - t0) / 1000).toFixed(1)} s`);
 await page.screenshot({ path: path.join(outDir, '00_intro.png') });
