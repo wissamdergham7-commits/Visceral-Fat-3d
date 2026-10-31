@@ -1,7 +1,7 @@
 // tests/snap.mjs — fast, scriptable screenshots for one build.
 //   node tests/snap.mjs <html> <outdir> --steps '<json array>' [--size 600x560]
 // step = { name, loss?: -10..20, view?: 'front'|'side'|'heart'|'liver'|'belly',
-//          cam?: [px,py,pz,tx,ty,tz], js?: 'any JS evaluated in page', wait?: ms, full?: true }
+//          cam?: [px,py,pz,tx,ty,tz], js?: 'any JS evaluated in page', print?: 'JS expression logged', wait?: ms, full?: true }
 // The page object is reachable as window.__ctx (scene, camera, state, anchors, groups, renderer).
 import { createRequire } from 'module';
 const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT_PKG || '/opt/node-tools/node_modules/playwright');
@@ -32,9 +32,13 @@ for (const s of steps) {
   if (s.view) await page.evaluate((v) => window.__view(v), s.view);
   if (s.cam) await page.evaluate((c) => window.__cam(...c), s.cam);
   if (s.js) await page.evaluate(s.js);
+  if (s.print) console.log(`${s.name} print:`, JSON.stringify(await page.evaluate(s.print)));
   await page.evaluate(() => window.__snap && window.__snap());
   await page.waitForTimeout(s.wait ?? 1500);
-  const info = await page.evaluate(() => { const i = window.__ctx.renderer.info.render; return `${i.triangles} tris, ${i.calls} calls`; });
+  const info = await page.evaluate((() => { const c = window.__ctx, cam = c.camera; let tris = 0, meshes = 0;
+    c.scene.traverse((o) => { if (!o.isMesh || !o.visible) return; for (let p = o.parent; p; p = p.parent) if (!p.visible) return;
+      if (!(o.layers.mask & cam.layers.mask)) return; const g = o.geometry; const n = g.index ? g.index.count / 3 : g.attributes.position.count / 3;
+      tris += n * (o.isInstancedMesh ? o.count : 1); meshes++; }); return `${Math.round(tris)} tris, ${meshes} meshes`; }));
   await page.screenshot({ path: path.join(outDir, s.name + '.png'), clip: s.full ? undefined : box, animations: 'disabled', timeout: 150000 });
   console.log(`${s.name}: ${info}`);
 }

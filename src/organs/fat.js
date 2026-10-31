@@ -13,7 +13,7 @@
 // a few multiplies + one table-based wall lookup per vertex, grid normals (no computeVertexNormals), and samples the
 // laid anterior sheet bilinearly for lobules and vessel rings.
 import { THREE, P, clamp, lerp, smooth, noise3, rnd, setSeed, add, LAYER } from '../core/ctx.js';
-import { palette, OrganMat, fatColors } from '../core/style.js';
+import { palette, OrganMat, fatColors, GLOSS } from '../core/style.js';
 import { wallSampler } from './body.js';
 
 // (soft lobule finish merged into core/style.js as GLOSS.fatSoft)

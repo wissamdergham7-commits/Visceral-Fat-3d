@@ -29,7 +29,10 @@ const stats = [];
 const shot = async (name, full = false, wait = 1600) => {
   await page.evaluate(() => window.__snap && window.__snap());
   await page.waitForTimeout(wait);
-  const info = await page.evaluate(() => { const i = window.__ctx.renderer.info.render; return { tris: i.triangles, calls: i.calls }; });
+  const info = await page.evaluate((() => { const c = window.__ctx, cam = c.camera; let tris = 0, meshes = 0;
+    c.scene.traverse((o) => { if (!o.isMesh || !o.visible) return; for (let p = o.parent; p; p = p.parent) if (!p.visible) return;
+      if (!(o.layers.mask & cam.layers.mask)) return; const g = o.geometry; const n = g.index ? g.index.count / 3 : g.attributes.position.count / 3;
+      tris += n * (o.isInstancedMesh ? o.count : 1); meshes++; }); return { tris: Math.round(tris), calls: meshes }; }));  // geometry actually submitted for the camera's layers
   await page.screenshot({ path: path.join(outDir, name + '.png'), clip: full ? undefined : box, animations: 'disabled', timeout: 180000 });
   stats.push({ name, ...info }); process.stdout.write(`${name} (${info.tris} tris / ${info.calls} calls)\n`);
 };
