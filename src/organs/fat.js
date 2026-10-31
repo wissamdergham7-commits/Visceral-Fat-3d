@@ -1,35 +1,43 @@
 // organs/fat.js — visceral fat, built twice (state A on layer 1, state B on layer 2):
-//   epicardial : lobules sitting ON the heart surface (heartSurf + its normal), AV / interventricular grooves first
+//   epicardial : lobules sitting ON the heart surface (heartSurf + its normal), AV / interventricular grooves first;
+//                the lobules on the anterior lid shrink away with the heart's cut-away (the AV groove ring stays)
 //   omentum    : three stacked, rippled translucent sheets hanging from the greater curvature of the stomach in front
 //                of the transverse colon, lobules packed between the layers, gastro-epiploic arcade + descending
-//                vessels (re-laid on the sheet, never rebuilt)
+//                vessels (re-laid on the sheet, never rebuilt); lobules are squeezed between the colon and the wall
 //   mesentery  : fan membrane from the posterior root to the small-bowel loops (deflected behind the loops),
 //                radiating vessels + arcades, fat along the vessels first, then everywhere; omental appendices on the colon
-//   perirenal  : lobules on the kidney ellipsoid, fitted at build time to stay inside the 0.5 x 0.86 x 0.4 capsule
-// Lobules are InstancedMesh pairs (coarse / detail geometry sharing ONE instance buffer); the detail set switches with
-// hysteresis and the vessel twigs fade with camera distance. Everything is a continuous function of f: lobules grow
-// from zero scale, sheets lengthen / thicken / ripple, vessels thicken — nothing pops or rebuilds.
-// Per-frame cost: every e-independent term of the membranes is precomputed per vertex at build; the relay only does
-// a few multiplies + one table-based wall lookup per vertex, grid normals (no computeVertexNormals), and samples the
-// laid anterior sheet bilinearly for lobules and vessel rings.
+//   perirenal  : lobules on the kidney surface in the kidney's own frame, fitted at build time to stay inside the
+//                0.5 x 0.86 x 0.4 capsule; the camera-facing half shrinks away with the kidney's coronal cut-away
+// Lobules are InstancedMesh pairs (coarse 24-tri / detail 64-tri geometry sharing ONE instance buffer); the detail set
+// switches with hysteresis and the vessel twigs fade with camera distance; ctx.state.perf 0 keeps coarse lobules only.
+// Everything is a continuous function of f: lobules grow from zero scale, sheets lengthen / thicken / ripple, vessels
+// thicken — nothing pops or rebuilds. Per-frame cost: every e-independent term of the membranes is precomputed per
+// vertex at build; the relay only does a few multiplies + one table-based wall lookup per vertex, grid normals, and
+// samples the laid anterior sheet bilinearly for lobules and vessel rings.
+// Consumes anchors: heartSurf, ventG, heartPos, colonCurve, siCurve, kidneyPos, wallSampler (body) and, when present,
+// heartCut (0..1), colonRadius(u), kidneyCutWindow — each with a local fallback (see build / update).
 import { THREE, P, clamp, lerp, smooth, noise3, rnd, setSeed, add, LAYER } from '../core/ctx.js';
 import { palette, OrganMat, fatColors, GLOSS } from '../core/style.js';
 import { wallSampler } from './body.js';
 
-// (soft lobule finish merged into core/style.js as GLOSS.fatSoft)
+// (soft lobule finish merged into core/style.js as GLOSS.fatSoft — no STYLE-REQUEST outstanding)
 
 const N = { epi: 760, om: 900, mes: 900, pr: 360 };          // lobule instances per state (<= 2920 total)
 const OM = { cols: 60, rows: 44 }, OMD = { cols: 30, rows: 22 }, MES = { cols: 40, rows: 28 };   // anterior / deep omentum sheets, mesentery
 const NEAR_IN = 15, NEAR_OUT = 17, TWIG_FAR = 18, TWIG_NEAR = 14;   // LOD hysteresis + twig fade (camera distance to the trunk)
 const TRUNK = P(0, -0.6, 0.6);
-const CAPSULE = [0.5, 0.86, 0.4], KIDNEY = [0.4, 0.74, 0.3];
+const CAPSULE = [0.5, 0.86, 0.4], KIDNEY = [0.43, 0.78, 0.31];      // task capsule / cortex half-extents (kidney-local)
+const KIDNEY_CLOSE = 7.6;                                            // organs/kidneys.js opens its coronal cut below this distance
+const SI_R = 0.17;                                                   // small-bowel tube radius (maximum, incl. peristaltic bulge)
+/* heart cut-away plane (heart-local, identical to organs/heart.js): the anterior lid is p·HCUT_N > HCUT_D */
+const HCUT_N = P(0, 0.315, 1).normalize(), HCUT_D = 0.153, HEART_POS = P(0.38, 1.5, 0.55);
 
 let C, dummy, lobMat, twigMat, geoLo, geoHi;
-const epi = [], om = [], mes = [], pr = [];
-let setA, setB, lastA = -1, lastKeyA = '', lastB = -1, near = null, lastNear = null;
-const detail = [], coarse = [], twigs = [];
+const epi = [], om = [], mes = [], pr = [], kid = [];
+let setA, setB, lastA = -1, lastKeyA = '', lastB = -1, near = null, lastNear = null, lastT = 0, hcut = 0, lastHcut = -1, lastPerf = -1;
+const detail = [], coarse = [], twigs = [], deepSheets = [];
 const _v = new THREE.Vector3(), _m = new THREE.Vector3(), _a = new THREE.Vector3(), _b = new THREE.Vector3(), _t = new THREE.Vector3(), _n1 = new THREE.Vector3(), _n2 = new THREE.Vector3(), _d = new THREE.Vector3();
-const Y_AXIS = new THREE.Vector3(0, 1, 0), Z_AXIS = new THREE.Vector3(0, 0, 1), qA = new THREE.Quaternion(), qS = new THREE.Quaternion();
+const Y_AXIS = new THREE.Vector3(0, 1, 0), qA = new THREE.Quaternion(), qS = new THREE.Quaternion();
 const byThr = (arr) => arr.sort((a, b) => a.thr - b.thr);
 /** polynomial smooth minimum (continuous wall clamp) */
 const smin = (a, b, k) => { const h = clamp(0.5 + 0.5 * (b - a) / k, 0, 1); return lerp(b, a, h) - k * h * (1 - h); };
@@ -153,6 +161,73 @@ function layStrands(S, sh, rScale, lift) {
   S.geo.attributes.position.needsUpdate = true; S.geo.attributes.normal.needsUpdate = true;
 }
 
+/* ---------- colon as an obstacle: per-u radius + front-surface lookup ---------- */
+/** the colon as an obstacle / carrier: radius(u) = tube radius along the curve (anchors.colonRadius(u) when the digestive
+ *  module publishes it, else the colon mesh's own sweep surface — geometry.userData.surf — max over the circumference
+ *  incl. haustra, else 0.4) and surf(u, th, out) = point on the colon wall (the mesh surface when available, else the
+ *  curve frame t x UP, t x n — the same frame digestive.js sweeps with — at radius(u)) */
+const COLON_UP = new THREE.Vector3(0.3, 1, 0.2).normalize();
+function colonObstacle(colonCurve) {
+  let best = null;
+  C.groups.abdomen.traverse((o) => {
+    if (!o.isMesh || o.userData.key !== 'colon' || !o.geometry.userData.surf) return;
+    if (!best || o.geometry.userData.curve === colonCurve || (best.geometry.userData.curve !== colonCurve && o.geometry.attributes.position.count > best.geometry.attributes.position.count)) best = o;
+  });
+  const msurf = best && best.geometry.userData.surf;
+  let radius = typeof C.anchors.colonRadius === 'function' ? C.anchors.colonRadius : null;
+  if (!radius && msurf) {
+    const tab = new Float32Array(121), p = new THREE.Vector3(), c = new THREE.Vector3();
+    for (let i = 0; i <= 120; i++) {
+      const u = i / 120; colonCurve.getPointAt(u, c); let r = 0;
+      for (let j = 0; j < 16; j++) r = Math.max(r, msurf(u, j / 16 * Math.PI * 2, 1, p).distanceTo(c));
+      tab[i] = r;
+    }
+    radius = (u) => { const t = clamp(u, 0, 1) * 120, i = Math.min(119, t | 0); return tab[i] + (tab[i + 1] - tab[i]) * (t - i); };
+  }
+  if (!radius) radius = () => 0.4;
+  const c = new THREE.Vector3(), tg = new THREE.Vector3(), n = new THREE.Vector3(), b = new THREE.Vector3();
+  const surf = msurf ? (u, th, out) => msurf(u, th, 1, out) : (u, th, out) => {
+    colonCurve.getPointAt(u, c); colonCurve.getTangentAt(u, tg); n.crossVectors(tg, COLON_UP).normalize(); b.crossVectors(tg, n).normalize();
+    return out.copy(c).addScaledVector(n, Math.cos(th) * radius(u)).addScaledVector(b, Math.sin(th) * radius(u));
+  };
+  return { radius, surf };
+}
+/* front surface of the colon tube as a continuous (x, y) lookup (falls away at slope 2 outside the footprint), built once
+ * from colonCurve + its radius: the apron and its lobules drape in FRONT of the transverse colon instead of cutting through it */
+const CL = { x0: -2.4, x1: 2.4, nx: 48, y0: -4.5, y1: -0.9, ny: 36 };
+let colonLUT = null;
+function buildColonLUT(cp) {
+  const g = colonLUT = new Float32Array((CL.nx + 1) * (CL.ny + 1)), n = cp.x.length;
+  for (let j = 0; j <= CL.ny; j++) for (let i = 0; i <= CL.nx; i++) {
+    const x = lerp(CL.x0, CL.x1, i / CL.nx), y = lerp(CL.y0, CL.y1, j / CL.ny); let zf = -9;
+    for (let k = 0; k < n; k++) {
+      const R = cp.r[k] + 0.015, d2 = (x - cp.x[k]) ** 2 + (y - cp.y[k]) ** 2;
+      zf = Math.max(zf, d2 < R * R ? cp.z[k] + Math.sqrt(R * R - d2) : cp.z[k] - 2 * (Math.sqrt(d2) - R));
+    }
+    g[j * (CL.nx + 1) + i] = zf;
+  }
+}
+function colonFront(x, y) {
+  const fx = clamp((x - CL.x0) / (CL.x1 - CL.x0) * CL.nx, 0, CL.nx - 1e-3), fy = clamp((y - CL.y0) / (CL.y1 - CL.y0) * CL.ny, 0, CL.ny - 1e-3);
+  const i = fx | 0, j = fy | 0, du = fx - i, dv = fy - j, W = CL.nx + 1, a = j * W + i;
+  return (colonLUT[a] * (1 - du) + colonLUT[a + 1] * du) * (1 - dv) + (colonLUT[a + W] * (1 - du) + colonLUT[a + W + 1] * du) * dv;
+}
+/** keep a lobule of scale sc in the gap between the colon front and the inner abdominal wall at (x, y): returns the
+ *  (possibly reduced) scale and writes the clamped z into v. Continuous in f and in the body parameters. */
+function squeeze(v, sc, wall) {
+  const cf = colonFront(v.x, v.y), wz = wall(v.y, v.x) - 0.05, room = wz - cf;
+  if (room < sc) sc = Math.max(1e-4, room * 0.9);                       // not enough room: shrink to fit (vanishes when none)
+  const zc = cf + 0.3 * sc; if (v.z < zc) v.z = zc;                       // in front of the colon
+  const zw = wz - sc * 0.7; if (v.z > zw) v.z = zw;                       // never through the abdominal wall
+  return sc;
+}
+/** mesentery lobules sit behind the loops, so they are never pushed: one that would reach the abdominal wall
+ *  shrinks instead (continuous in the body parameters) */
+function wallShrink(v, sc, wall) {
+  const zw = wall(v.y, v.x) - 0.05;
+  return v.z + sc * 0.7 > zw ? Math.max(1e-4, Math.min(sc, (zw - v.z) / 0.7)) : sc;
+}
+
 /* ---------- greater omentum carrier (u across patient right -> left, v down the apron, k = layer 0 deep … 2 anterior) ----------
  * Static per-vertex terms (everything that does not depend on e or the body) are precomputed; the dynamic part
  * (apron length, layer gap, ripple amplitude, drape, wall clamp) costs a few multiplies + one wall lookup. */
@@ -168,23 +243,6 @@ function omStatic(u, v, k, S, j) {
   S[j + 6] = 0.04 * Math.sin(u * 9 + v * 3) * v;
   S[j + 7] = k >= 1.5 ? (0.55 * noise3(u * 29, v * 21, 1.3) + 0.45 * noise3(u * 70, v * 50, 2.1)) * smooth(1.5, 2, k) : 0;   // cobbled fatty apron
   S[j + 8] = 0.06 * Math.sin(Math.PI * u);
-}
-/* front surface of the colon tube as a continuous (x, y) lookup (falls away at slope 2 outside the footprint), built once
- * from colonCurve: the apron and its lobules drape in FRONT of the transverse colon instead of cutting through it */
-const CL = { x0: -2.4, x1: 2.4, nx: 48, y0: -4.3, y1: -0.9, ny: 34 };
-let colonLUT = null;
-function buildColonLUT(colonCurve) {
-  const pts = colonCurve.getSpacedPoints(600), R = 0.43, g = colonLUT = new Float32Array((CL.nx + 1) * (CL.ny + 1));
-  for (let j = 0; j <= CL.ny; j++) for (let i = 0; i <= CL.nx; i++) {
-    const x = lerp(CL.x0, CL.x1, i / CL.nx), y = lerp(CL.y0, CL.y1, j / CL.ny); let zf = -9;
-    for (const c of pts) { const d2 = (x - c.x) ** 2 + (y - c.y) ** 2; zf = Math.max(zf, d2 < R * R ? c.z + Math.sqrt(R * R - d2) : c.z - 2 * (Math.sqrt(d2) - R)); }
-    g[j * (CL.nx + 1) + i] = zf;
-  }
-}
-function colonFront(x, y) {
-  const fx = clamp((x - CL.x0) / (CL.x1 - CL.x0) * CL.nx, 0, CL.nx - 1e-3), fy = clamp((y - CL.y0) / (CL.y1 - CL.y0) * CL.ny, 0, CL.ny - 1e-3);
-  const i = fx | 0, j = fy | 0, du = fx - i, dv = fy - j, W = CL.nx + 1, a = j * W + i;
-  return (colonLUT[a] * (1 - du) + colonLUT[a + 1] * du) * (1 - dv) + (colonLUT[a + W] * (1 - du) + colonLUT[a + W + 1] * du) * dv;
 }
 /** dynamic part: e = effective fat, xs = lateral fit to a narrow body, wall(y, x) = inner fascia z */
 function omDyn(S, j, e, k, xs, wall, out) {
@@ -223,24 +281,33 @@ function mesBase(s, t, out) {
   const th = lerp(1.1, -2.55, s), rimX = -0.35 + 1.95 * Math.cos(th), rimY = -2.65 + 1.2 * Math.sin(th);
   return out.set(lerp(rx0, rimX, t), lerp(ry0, rimY, t), lerp(-0.92, 0.5 + 0.25 * Math.sin(th), Math.pow(t, 0.8)));
 }
-const mesRuffle = (s, t) => t * (Math.sin(s * 26 + t * 3) + 0.5 * Math.sin(s * 47 - t * 6));
-/** per-vertex statics incl. a deflection field that keeps the membrane behind the small-bowel loops */
-function precomputeMes(sh, bowel, colon) {
-  const W = sh.cols + 1, H = sh.rows + 1, S = sh.st = new Float32Array(W * H * MSS), dz = new Float32Array(W * H), p = new THREE.Vector3();
-  const clearance = (q, m) => { const R2 = m * m, C2 = (m + 0.215) ** 2; for (const b of bowel) if (q.distanceToSquared(b) < R2) return false; for (const b of colon) if (q.distanceToSquared(b) < C2) return false; return true; };
+/* ruffles are strongest mid-fan and vanish at the root and at the rim (the rim threads between the loops) */
+const mesRuffle = (s, t) => 4 * t * (1 - t) * (Math.sin(s * 26 + t * 3) + 0.5 * Math.sin(s * 47 - t * 6));
+/** per-vertex statics incl. a deflection field that keeps the membrane behind the small-bowel loops: each vertex is
+ *  pushed back until it clears the loops (margin incl. its ruffle); where no clear depth exists within reach it takes
+ *  the depth of largest clearance. Every vertex keeps at least its own push after the dilate / smooth passes. */
+function precomputeMes(sh, bowel, cp) {
+  const W = sh.cols + 1, H = sh.rows + 1, S = sh.st = new Float32Array(W * H * MSS), dz = new Float32Array(W * H), dz0 = new Float32Array(W * H), p = new THREE.Vector3();
+  const nc = cp.x.length;
+  const clearance = (q) => {                                                       // signed room: distance to the nearest tube surface
+    let m = 9; for (const b of bowel) m = Math.min(m, q.distanceTo(b) - SI_R);
+    for (let k = 0; k < nc; k++) m = Math.min(m, Math.sqrt((q.x - cp.x[k]) ** 2 + (q.y - cp.y[k]) ** 2 + (q.z - cp.z[k]) ** 2) - cp.r[k] - 0.02);
+    return m;
+  };
   for (let r = 0; r < H; r++) for (let c = 0; c < W; c++) {
     const s = c / sh.cols, t = r / sh.rows, i = r * W + c; mesBase(s, t, p);
     S[i * MSS] = p.x; S[i * MSS + 1] = p.y; S[i * MSS + 2] = p.z; S[i * MSS + 3] = mesRuffle(s, t);
-    const margin = 0.155 + 0.04 + 0.2 * t; let d = 0;                               // + room for the ruffle (<= 0.195 t)
-    while (d > -0.9 && !clearance(_v.set(p.x, p.y, p.z + d), margin)) d -= 0.03;
-    dz[i] = d;
+    const margin = 0.03 + 0.195 * 4 * t * (1 - t);                                    // + room for the ruffle (amplitude <= 0.195 mid-fan)
+    let d = 0, best = 0, bestM = -9;
+    for (; d > -1.1; d -= 0.03) { const m = clearance(_v.set(p.x, p.y, p.z + d)); if (m > bestM) { bestM = m; best = d; } if (m >= margin) break; }
+    dz[i] = dz0[i] = d > -1.1 ? d : best;
   }
   const tmp = new Float32Array(W * H);
-  for (let pass = 0; pass < 2; pass++) {                                            // dilate (keep the push) then smooth
+  for (let pass = 0; pass < 3; pass++) {                                            // dilate (keep the push), smooth, smooth
     for (let r = 0; r < H; r++) for (let c = 0; c < W; c++) {
       let acc = 0, n = 0, mn = 0;
       for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) { const rr = r + dr, cc = c + dc; if (rr < 0 || cc < 0 || rr >= H || cc >= W) continue; const v = dz[rr * W + cc]; acc += v; n++; mn = Math.min(mn, v); }
-      tmp[r * W + c] = pass === 0 ? mn : acc / n;
+      tmp[r * W + c] = Math.min(pass === 0 ? mn : acc / n, dz0[r * W + c]);
     }
     dz.set(tmp);
   }
@@ -291,24 +358,38 @@ function mesenteryStrands() {
 }
 
 /* ---------- state relay ---------- */
-function layFat(set, f, body) {
-  const e = Math.pow(f, 1.35), grow = 0.5 + 0.6 * f, wall = wallSampler(body), xs = lateralFit(body);
-  /* epicardial: on the surface, flattened along the normal, one third embedded */
+/** epicardial: on the surface, flattened along the normal, one third embedded; the anterior-lid lobules shrink with the
+ *  heart's cut-away (hcut) so the opened chambers stay visible, the AV groove ring stays */
+function layEpi(set, f) {
+  const e = Math.pow(f, 1.35), grow = 0.5 + 0.6 * f;
   layInst(set.epi, epi, e, (p, a) => {
-    const sc = p.s * grow * a;
+    const sc = Math.max(1e-4, p.s * grow * a * (1 - hcut * p.lid));
     dummy.position.copy(p.p).addScaledVector(p.n, sc * 0.27);
     dummy.quaternion.copy(p.q); dummy.scale.set(sc, sc * 0.5, sc);
   });
+}
+/** perirenal: on the kidney surface, fitted inside the capsule; the half facing the camera shrinks away while the
+ *  kidney's coronal cut-away is open (kid[].cut / side mirror organs/kidneys.js) */
+function layPr(set, f) {
+  const e = Math.pow(f, 1.35);
+  layInst(set.pr, pr, e, (p, a) => {
+    const K = kid[p.ki], w = K.cut * smooth(-0.04, 0.1, p.zL * K.side);
+    const sc = Math.max(1e-4, p.s * (0.55 + 0.75 * f) * a * (1 - w));
+    dummy.position.copy(p.p).addScaledVector(p.n, sc * 0.15);
+    dummy.quaternion.copy(p.q); dummy.scale.set(sc, sc * 0.75, sc);
+  });
+}
+function layFat(set, f, body) {
+  const e = Math.pow(f, 1.35), grow = 0.5 + 0.6 * f, wall = wallSampler(body), xs = lateralFit(body);
+  layEpi(set, f);
   /* omentum sheets (anterior 60x44, deep 30x22) + vessels + lobules */
   set.om.forEach((sh, k) => { layOm(sh, k, e, xs, wall); sh.mesh.material.opacity = [0.12, 0.14, 0.2][k] + [0.25, 0.3, 0.7][k] * e; });
   const ant = set.om[2], vScale = 0.7 + 0.55 * e, gap = 0.05 + 0.1 * e;
   layStrands(set.omV, ant, vScale, 0.03 * e);                                     // lifted over the lobule layer as fat grows
   layStrands(set.omT, ant, vScale, 0.03 * e);
   layInst(set.omf, om, e, (p, a) => {
-    const sc = p.s * grow * a;
     sampleGrid(ant, p.u, p.v, _v, _m); _v.z += (p.k - 2) * gap * smooth(-1.9, -2.6, _v.y) + p.zj * 0.04;
-    const zc = colonFront(_v.x, _v.y) + 0.3 * sc; if (_v.z < zc) _v.z = zc;
-    const zw = wall(_v.y, _v.x) - 0.05 - sc * 0.7; if (_v.z > zw) _v.z = zw;
+    const sc = squeeze(_v, p.s * grow * a, wall);
     dummy.position.copy(_v); orient(_m, p.spin); dummy.scale.set(sc, sc * 0.62, sc);
   });
   /* mesentery sheet + vessels + lobules */
@@ -317,25 +398,20 @@ function layFat(set, f, body) {
   layStrands(set.mesV, set.mes, vScale, 0.015 * e);
   layStrands(set.mesT, set.mes, vScale, 0.015 * e);
   layInst(set.mesf, mes, e, (p, a) => {
-    const sc = p.sz * grow * a;
+    let sc = p.sz * grow * a;
     if (p.onColon) { _v.copy(p.p); dummy.quaternion.copy(p.q); }
     else { sampleGrid(set.mes, p.s, p.t, _v, _m); _v.addScaledVector(_m, p.side * (0.03 + sc * 0.55 + 0.06 * e * p.j)); orient(_m, p.spin); }
-    const zw = wall(_v.y, _v.x) - 0.05 - sc * 0.7; if (_v.z > zw) _v.z = zw;
+    sc = wallShrink(_v, sc, wall);
     dummy.position.copy(_v); dummy.scale.set(sc, sc * 0.8, sc);
   });
-  /* perirenal: on the kidney ellipsoid, fitted inside the capsule */
-  layInst(set.pr, pr, e, (p, a) => {
-    const sc = p.s * (0.55 + 0.75 * f) * a;
-    dummy.position.copy(p.p).addScaledVector(p.n, sc * 0.1);
-    dummy.quaternion.copy(p.q); dummy.scale.set(sc, sc * 0.75, sc);
-  });
+  layPr(set, f);
 }
 
 export function build(ctx) {
   C = ctx; dummy = ctx.dummy;
   const ab = ctx.groups.abdomen;
   const { heartSurf, ventG, colonCurve, siCurve, kidneyPos } = ctx.anchors;
-  geoLo = lobuleGeo(6, 4); geoHi = lobuleGeo(9, 6);
+  geoLo = lobuleGeo(6, 3); geoHi = lobuleGeo(8, 5);                                 // 24 / 64 triangles
   lobMat = OrganMat(palette.white, Object.assign({ sheenColor: new THREE.Color(palette.fatSheen), emissive: new THREE.Color(palette.fatEmissive), emissiveIntensity: 0.12, bumpScale: 0.25 }, GLOSS.fatSoft));
   const sheetMat = () => OrganMat(palette.omentumPlate, { transparent: true, opacity: 0.4, side: THREE.DoubleSide, depthWrite: false, roughness: 0.5, sheen: 0.8, sheenColor: new THREE.Color(palette.omentumSheen), emissiveIntensity: 0.05 });
   const vesselMat = OrganMat(palette.omentumVessel, { roughness: 0.28, clearcoat: 0.9, bumpScale: 0.1, emissiveIntensity: 0.3, sheen: 0.3 });
@@ -347,28 +423,37 @@ export function build(ctx) {
   const LAD = (ph) => 0.1 - ph * 0.06, PIV = Math.PI + 0.2, AV = 1.12;
   for (let i = 0; i < N.epi; i++) {
     const r = rnd(), q = Math.pow(rnd(), 1.3), side = rnd() < 0.5 ? -1 : 1;
-    let th, ph, thr, s;
+    let th, ph, thr, s, grp;
     if (r < 0.36) {            // atrioventricular groove ring (spreads mostly downward over the ventricles)
-      th = rnd() * Math.PI * 2; ph = AV + (side < 0 ? -(0.04 + 0.12 * q) : 0.05 + 0.38 * q) + (rnd() - 0.5) * 0.04;
+      grp = 0; th = rnd() * Math.PI * 2; ph = AV + (side < 0 ? -(0.04 + 0.12 * q) : 0.05 + 0.38 * q) + (rnd() - 0.5) * 0.04;
       thr = 0.02 + 0.32 * q + 0.1 * rnd(); s = 0.07 + 0.045 * rnd() + 0.03 * (1 - q);
     } else if (r < 0.6) {      // interventricular grooves (anterior LAD line 70 %, posterior 30 %)
-      ph = 0.65 + rnd() * 2.2; const ant = rnd() < 0.7;
+      grp = 1; ph = 0.65 + rnd() * 2.2; const ant = rnd() < 0.7;
       th = (ant ? LAD(ph) : PIV) + side * (0.06 + 0.42 * q) / Math.max(Math.sin(ph), 0.35);
       thr = 0.06 + 0.36 * q + 0.1 * rnd(); s = 0.065 + 0.04 * rnd() + 0.025 * (1 - q);
     } else if (r < 0.84) {     // right-ventricular free wall (between the LAD and the RCA): the thick pad
-      ph = 1.3 + rnd() * 1.3; th = -0.25 - rnd() * 1.5; thr = 0.3 + 0.45 * rnd(); s = 0.055 + 0.05 * rnd();
+      grp = 2; ph = 1.3 + rnd() * 1.3; th = -0.25 - rnd() * 1.5; thr = 0.3 + 0.45 * rnd(); s = 0.055 + 0.05 * rnd();
     } else {                   // left-ventricular lateral wall and apex
-      ph = 1.4 + rnd() * 1.6; th = 0.45 + rnd() * 1.7; thr = 0.5 + 0.5 * rnd(); s = 0.05 + 0.045 * rnd();
+      grp = 3; ph = 1.4 + rnd() * 1.6; th = 0.45 + rnd() * 1.7; thr = 0.5 + 0.5 * rnd(); s = 0.05 + 0.045 * rnd();
     }
-    epi.push({ th, ph: clamp(ph, 0.5, 3.0), thr: clamp(thr, 0.01, 1), s, spin: rnd() * 6.3 });
+    epi.push({ grp, th, ph: clamp(ph, 0.5, 3.0), thr: clamp(thr, 0.01, 1), s, spin: rnd() * 6.3 });
   }
   byThr(epi).forEach((p) => {
     p.p = heartSurf(p.th, p.ph, 1);
     _a.copy(heartSurf(p.th + 2e-3, p.ph, 1)).sub(p.p); _b.copy(heartSurf(p.th, p.ph + 2e-3, 1)).sub(p.p);
     p.n = new THREE.Vector3().crossVectors(_a, _b).normalize(); if (p.n.dot(p.p) < 0) p.n.negate();
     orient(p.n, p.spin); p.q = dummy.quaternion.clone();
+    /* weight of the heart cut-away on this lobule: 1 on the anterior lid, 0 behind the cut plane and on the AV groove ring */
+    const ring = p.grp === 0 ? 1 - smooth(0.05, 0.22, Math.abs(p.ph - AV)) : 0;
+    p.lid = smooth(HCUT_D - 0.05, HCUT_D + 0.12, p.p.dot(HCUT_N)) * (1 - ring);
   });
   const epiA = makePair(epi.length, ventG, LAYER.A, 'epifat'), epiB = makePair(epi.length, ventG, LAYER.B, 'epifat');
+
+  /* ---- colon obstacle data: curve samples with the local tube radius ---- */
+  const colonObs = colonObstacle(colonCurve), colonR = colonObs.radius;
+  const cpts = colonCurve.getSpacedPoints(600), cp = { x: new Float32Array(601), y: new Float32Array(601), z: new Float32Array(601), r: new Float32Array(601) };
+  cpts.forEach((q, i) => { cp.x[i] = q.x; cp.y[i] = q.y; cp.z[i] = q.z; cp.r[i] = colonR(i / 600); });
+  buildColonLUT(cp);
 
   /* ---- omentum: lobules along the arcade and the descending vessels first, packed between the layers; kept off the
    *      vessel lines (the vessels run in the grooves between lobules); only anterior lobules over the colon zone ---- */
@@ -388,6 +473,7 @@ export function build(ctx) {
     const g = k === 2 ? OM : OMD;
     omA.push(makeSheet(g.cols, g.rows, sheetMat(), ab, LAYER.A, 'omentum', 6 + k, abSphere)); omB.push(makeSheet(g.cols, g.rows, sheetMat(), ab, LAYER.B, 'omentum', 6 + k, abSphere));
     precomputeOm(omA[k], k); precomputeOm(omB[k], k);
+    if (k < 2) deepSheets.push(omA[k].mesh, omB[k].mesh);
   }
   const os = omentumStrands(), os2 = omentumStrands();
   const omVA = makeStrands(os.main, 6, vesselMat, ab, LAYER.A, 'omentum', abSphere), omVB = makeStrands(os2.main, 6, vesselMat, ab, LAYER.B, 'omentum', abSphere);
@@ -396,22 +482,25 @@ export function build(ctx) {
   const omfA = makePair(om.length, ab, LAYER.A, 'omentum'), omfB = makePair(om.length, ab, LAYER.B, 'omentum');
 
   /* ---- mesentery: fan membrane deflected behind the loops; lobules near the vessels / root first, rejected when they
-   *      would sit inside a small-bowel tube at any fat level; omental appendices on the colon ---- */
-  buildColonLUT(colonCurve);
-  const bowel = siCurve.getSpacedPoints(700), colon = colonCurve.getSpacedPoints(300);
-  const clearOfBowel = (p, r) => { const R2 = (0.155 + r) ** 2, C2 = (0.37 + r) ** 2; for (const q of bowel) if (p.distanceToSquared(q) < R2) return false; for (const q of colon) if (p.distanceToSquared(q) < C2) return false; return true; };
+   *      would sit inside a small-bowel or colon tube at any fat level; omental appendices on the colon ---- */
+  const bowel = siCurve.getSpacedPoints(700), nc = cp.x.length;
+  const clearOfBowel = (p, r) => {
+    const R2 = (SI_R + r) ** 2; for (const q of bowel) if (p.distanceToSquared(q) < R2) return false;
+    for (let k = 0; k < nc; k++) { const rr = cp.r[k] + r; if ((p.x - cp.x[k]) ** 2 + (p.y - cp.y[k]) ** 2 + (p.z - cp.z[k]) ** 2 < rr * rr) return false; }
+    return true;
+  };
   const mesMatA = sheetMat(), mesMatB = sheetMat();
   const mesA = makeSheet(MES.cols, MES.rows, mesMatA, ab, LAYER.A, 'mesentery', 5, abSphere), mesB = makeSheet(MES.cols, MES.rows, mesMatB, ab, LAYER.B, 'mesentery', 5, abSphere);
-  precomputeMes(mesA, bowel, colon); mesB.st = mesA.st;
-  { const p = new THREE.Vector3(), tg = new THREE.Vector3(), n = new THREE.Vector3(), b = new THREE.Vector3(), up = new THREE.Vector3(0.3, 1, 0.2).normalize(), q0 = new THREE.Vector3(), q1 = new THREE.Vector3();
+  precomputeMes(mesA, bowel, cp); mesB.st = mesA.st;
+  { const p = new THREE.Vector3(), c = new THREE.Vector3(), n = new THREE.Vector3(), q0 = new THREE.Vector3(), q1 = new THREE.Vector3();
     for (let i = 0; i < N.mes; i++) {
       if (rnd() < 0.2) {
+        /* omental appendix ON the colon wall (surface point from the colon mesh, outward normal from the curve) */
         const u = 0.02 + 0.82 * rnd(), a = rnd() * Math.PI * 2, sz = 0.065 + 0.06 * rnd();
-        colonCurve.getPointAt(u, p); colonCurve.getTangentAt(u, tg); n.crossVectors(tg, up).normalize(); b.crossVectors(tg, n).normalize();
-        const nn = n.clone().multiplyScalar(Math.cos(a)).addScaledVector(b, Math.sin(a));
-        if (nn.z < -0.3 && rnd() < 0.7) { i--; continue; }        // mostly on the anterior face of the colon
-        const spin = rnd() * 6.3; orient(nn, spin);
-        mes.push({ onColon: true, p: p.clone().addScaledVector(nn, 0.36), n: nn, q: dummy.quaternion.clone(), thr: 0.25 + 0.75 * rnd(), sz, spin });
+        colonObs.surf(u, a, p); colonCurve.getPointAt(u, c); n.subVectors(p, c).normalize();
+        if (n.z < -0.3 && rnd() < 0.7) { i--; continue; }         // mostly on the anterior face of the colon
+        const nn = n.clone(), spin = rnd() * 6.3; orient(nn, spin);
+        mes.push({ onColon: true, p: p.clone().addScaledVector(nn, -0.02), n: nn, q: dummy.quaternion.clone(), thr: 0.25 + 0.75 * rnd(), sz, spin });
       } else {
         let s, t, side, j, sz, ok = false, tries = 0;
         while (!ok && tries++ < 16) {
@@ -436,26 +525,33 @@ export function build(ctx) {
   twigs.push(mesTA.mesh, mesTB.mesh);
   const mesfA = makePair(mes.length, ab, LAYER.A, 'mesentery'), mesfB = makePair(mes.length, ab, LAYER.B, 'mesentery');
 
-  /* ---- perirenal: on the kidney ellipsoid (0.4 x 0.74 x 0.3), posterior face and poles first; every lobule is
-   *      shrunk at build until all its vertices (coarse + detail geometry, maximum scale) lie inside the capsule ---- */
+  /* ---- perirenal: in each kidney's own frame (the kidney group's rotation, identity if not found) on the cortex
+   *      ellipsoid (anterior face flatter, like the cortex), posterior face and poles first, lighter over the hilum;
+   *      every lobule is shrunk at build until all its vertices (coarse + detail geometry, maximum scale) lie inside
+   *      the 0.5 x 0.86 x 0.4 capsule ---- */
   { const M = new THREE.Matrix4(), vv = new THREE.Vector3(), sc3 = new THREE.Vector3();
     kidneyPos.forEach((kp, ki) => {
-      const sgn = ki === 0 ? -1 : 1;
+      const g = ab.children.find((o) => o.isGroup && o.position.distanceTo(kp) < 1e-4);
+      const q = g ? g.quaternion.clone() : new THREE.Quaternion();
+      const K = { pos: kp.clone(), q, inv: q.clone().invert(), cut: 0, side: 1 }; kid.push(K);
+      const sgn = ki === 0 ? -1 : 1;                                               // -1 = patient's right kidney
       for (let i = 0; i < N.pr / 2; i++) {
         const dir = P(rnd() - 0.5, rnd() - 0.5, rnd() - 0.5).normalize();
         const rk = 1 / Math.sqrt((dir.x / KIDNEY[0]) ** 2 + (dir.y / KIDNEY[1]) ** 2 + (dir.z / KIDNEY[2]) ** 2);
-        const n = P(dir.x / KIDNEY[0] ** 2, dir.y / KIDNEY[1] ** 2, dir.z / KIDNEY[2] ** 2).normalize().applyAxisAngle(Z_AXIS, -sgn * 0.15);
-        const p = dir.clone().multiplyScalar(rk).applyAxisAngle(Z_AXIS, -sgn * 0.15).add(kp);
-        const post = dir.z < 0 ? 0 : 1, pole = 1 - Math.abs(dir.y), spin = rnd() * 6.3;
-        orient(n, spin);
-        const lob = { p, n, q: dummy.quaternion.clone(), thr: clamp(0.06 + 0.3 * post + 0.25 * pole * rnd() + 0.45 * rnd(), 0.01, 1), s: 0.05 + 0.03 * rnd(), spin };
+        const pl = dir.clone().multiplyScalar(rk); if (pl.z > 0) pl.z *= 0.93;
+        const nl = P(dir.x / KIDNEY[0] ** 2, dir.y / KIDNEY[1] ** 2, dir.z / KIDNEY[2] ** 2).normalize();
+        const p = pl.clone().applyQuaternion(q).add(kp), n = nl.clone().applyQuaternion(q);
+        const post = dir.z < 0 ? 0 : 1, pole = 1 - Math.abs(dir.y), hilum = smooth(0.3, 0.8, -sgn * dir.x) * (1 - smooth(0.4, 0.8, Math.abs(dir.y)));
+        const spin = rnd() * 6.3; orient(n, spin);
+        const lob = { ki, zL: pl.z, p, n, q: dummy.quaternion.clone(), thr: clamp(0.06 + 0.3 * post + 0.25 * pole * rnd() + 0.3 * hilum + 0.45 * rnd(), 0.01, 1), s: 0.05 + 0.03 * rnd(), spin };
         for (let it = 0; it < 12; it++) {                                           // fit: max normalised capsule radius of all vertices <= 0.98
           const sc = lob.s * 1.3; let mx = 0;
-          M.compose(_v.copy(p).addScaledVector(n, sc * 0.1), lob.q, sc3.set(sc, sc * 0.75, sc));
-          for (const g of [geoLo, geoHi]) { const pos = g.attributes.position; for (let k = 0; k < pos.count; k++) { vv.fromBufferAttribute(pos, k).applyMatrix4(M).sub(kp).applyAxisAngle(Z_AXIS, sgn * 0.15); mx = Math.max(mx, Math.sqrt((vv.x / CAPSULE[0]) ** 2 + (vv.y / CAPSULE[1]) ** 2 + (vv.z / CAPSULE[2]) ** 2)); } }
+          M.compose(_v.copy(p).addScaledVector(n, sc * 0.15), lob.q, sc3.set(sc, sc * 0.75, sc));
+          for (const gg of [geoLo, geoHi]) { const pos = gg.attributes.position; for (let k = 0; k < pos.count; k++) { vv.fromBufferAttribute(pos, k).applyMatrix4(M).sub(kp).applyQuaternion(K.inv); mx = Math.max(mx, Math.sqrt((vv.x / CAPSULE[0]) ** 2 + (vv.y / CAPSULE[1]) ** 2 + (vv.z / CAPSULE[2]) ** 2)); } }
           if (mx <= 0.98) break;
           lob.s *= 0.98 / mx;
         }
+        if (lob.s < 0.025) continue;                                                // no room here (hilum notch): skip
         pr.push(lob);
       }
     }); }
@@ -468,14 +564,47 @@ export function build(ctx) {
 }
 
 export function update(f, t, phys) {
-  const st = C.state, b = st.body;
+  const st = C.state, b = st.body, cam = C.camera;
+  const dtEase = clamp(t - lastT, 0, 0.4); lastT = t;
+  /* heart cut-away: anchors.heartCut when the heart publishes it, else the same rule + easing as organs/heart.js */
+  const hc = C.anchors.heartCut;
+  if (typeof hc === 'number') hcut = hc;
+  else if (hc && typeof hc.value === 'number') hcut = hc.value;
+  else {
+    const hp = C.anchors.heartPos || HEART_POS, dist = cam.position.distanceTo(hp), dT = C.controls.target.distanceTo(hp);
+    const tg = Math.max(smooth(9.5, 7.5, dist), smooth(13.5, 11.8, dist) * smooth(1.9, 1.0, dT));
+    hcut = Math.abs(hcut - tg) < 0.002 ? tg : lerp(hcut, tg, 1 - Math.exp(-dtEase * 9));
+  }
+  /* kidney coronal cut-away: anchors.kidneyCutWindow ([{cut, side}] or [cut, cut]) when published, else the rule of organs/kidneys.js */
+  const k3 = 1 - Math.exp(-dtEase * 3.2), kw = C.anchors.kidneyCutWindow; let kChanged = false;
+  kid.forEach((K, i) => {
+    let cut, side;
+    const w = Array.isArray(kw) ? kw[i] : null;
+    if (typeof w === 'number') { cut = w; _v.copy(cam.position).sub(K.pos).applyQuaternion(K.inv); side = _v.z >= 0 ? 1 : -1; }
+    else if (w && typeof w.cut === 'number') { cut = w.cut; side = typeof w.side === 'number' ? w.side : 1; }
+    else {
+      const tg = (st.focusKey === 'kidney' || cam.position.distanceTo(K.pos) < KIDNEY_CLOSE) ? 1 : 0;
+      cut = Math.abs(K.cut - tg) < 1e-3 ? tg : lerp(K.cut, tg, k3);
+      _v.copy(cam.position).sub(K.pos).applyQuaternion(K.inv); side = lerp(K.side, _v.z >= 0 ? 1 : -1, k3);
+    }
+    if (Math.abs(cut - K.cut) > 1e-3 || (cut > 1e-3 && Math.abs(side - K.side) > 1e-3)) kChanged = true;
+    K.cut = cut; K.side = side;
+  });
+
   const keyA = `${b.W.toFixed(3)}|${b.Wz.toFixed(3)}|${b.d.toFixed(3)}|${b.bulge.toFixed(3)}`;
-  if (Math.abs(f - lastA) > 1e-4 || keyA !== lastKeyA) { layFat(setA, f, b); lastA = f; lastKeyA = keyA; }
-  if (st.bVersion !== lastB) { layFat(setB, st.fB, st.bodyB); lastB = st.bVersion; }
-  /* LOD: detail lobules switch with hysteresis (in at 15, out at 17); twigs fade out between 14 and 18 */
-  const dist = C.camera.position.distanceTo(TRUNK);
-  if (near === null) near = dist < NEAR_IN; else if (near && dist > NEAR_OUT) near = false; else if (!near && dist < NEAR_IN) near = true;
+  const fullA = Math.abs(f - lastA) > 1e-4 || keyA !== lastKeyA, fullB = st.bVersion !== lastB;
+  if (fullA) { layFat(setA, f, b); lastA = f; lastKeyA = keyA; }
+  if (fullB) { layFat(setB, st.fB, st.bodyB); lastB = st.bVersion; }
+  if (Math.abs(hcut - lastHcut) > 0.003) { if (!fullA) layEpi(setA, f); if (!fullB) layEpi(setB, st.fB); lastHcut = hcut; }
+  if (kChanged) { if (!fullA) layPr(setA, f); if (!fullB) layPr(setB, st.fB); }
+
+  /* LOD honouring ctx.state.perf: 2 = detail lobules within 15 (out at 17) + twigs fading 18 -> 14;
+   * 1 = detail only within 11 (out at 13); 0 = coarse lobules only, no twigs, no deep omentum sheets */
+  const perf = st.perf ?? 2, nearIn = perf >= 2 ? NEAR_IN : perf === 1 ? 11 : -1, nearOut = nearIn + 2;
+  const dist = cam.position.distanceTo(TRUNK);
+  if (perf !== lastPerf) { near = null; for (const m of deepSheets) m.visible = perf > 0; lastPerf = perf; }
+  if (near === null) near = dist < nearIn; else if (near && dist > nearOut) near = false; else if (!near && dist < nearIn) near = true;
   if (near !== lastNear) { for (const m of detail) m.visible = near; for (const m of coarse) m.visible = !near; lastNear = near; }
-  const op = smooth(TWIG_FAR, TWIG_NEAR, dist);
+  const op = perf > 0 ? smooth(TWIG_FAR, TWIG_NEAR, dist) : 0;
   if (op !== twigMat.opacity) { twigMat.opacity = op; const vis = op > 0.01; for (const m of twigs) m.visible = vis; }
 }

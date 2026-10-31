@@ -35,7 +35,8 @@
 //     (resting HR is a few bpm higher with obesity; e.g. Framingham / NHANES associations, ~0.5-1 bpm per BMI unit)
 //   Sleep: -10 % (nocturnal dip). Obstructive apnoea: cyclical brady- then tachycardia at the arousal
 //     (Guilleminault C et al. Lancet 1984;1:126) — modelled as -6 bpm during the event, +24 bpm at arousal decaying over ~6 s.
-//   While a stairs test runs, the resting baseline is the TEST body's (today / after), blended in over ~1.2 s.
+//   While a stairs test runs, the resting baseline is the TEST body's (today / after), blended in over ~1.2 s; a restart
+//   (replay, or switching today -> after mid-run) keeps the current HR / breathing excess and lets it re-converge, no jump.
 //  BREATHING
 //   ERV fraction = exp(-0.0755 * max(0, BMI - 20))  (ERV ≈ 47 % of normal at BMI 30; FRC ≈ 75 %)
 //     (Jones RL, Nzekwu MM. Chest 2006;130:827 — lung volumes fall exponentially with BMI)
@@ -46,20 +47,26 @@
 //   tidalDepth(rest) = 0.60 + 0.40 * diaphragmTravel ; breathRate(rest) = 12 + 8 * (1 - diaphragmTravel)
 //     (rapid-shallow pattern and higher work of breathing in obesity: Salome CM et al. J Appl Physiol 2010;108:206;
 //      Babb TG et al. Am J Respir Crit Care Med 2008;178:116 — dyspnoea on exertion with central adiposity)
-//   Stairs test (two flights, time-compressed x3): load = clamp((BMI - 21) / 15, 0, 1)
+//   Stairs test (two flights ≈ 30 steps, time-compressed x3: 18 sim-s = 6 real s climb): load = clamp((BMI - 21) / 15, 0, 1)
 //     peak HR = rest + 45 + 35 * load ; peak RR = 18 + 14 * load + 4 * (1 - diaphragmTravel)
 //     recovery time constant tau = 22 + 40 * load s ; time to settle (within 10 bpm) = tau * ln(dHR / 10)
 //     (slower heart-rate recovery with obesity, improved by weight loss: Brinkworth GD et al. Am Heart J 2006;152:693)
 //  SLEEP / UPPER AIRWAY
 //   neck (cm) = 37 (men) / 34 (women) + 0.5 * (BMI - 25)  ±1.5 — guide estimate only
 //     (Ben-Noun L et al. Obes Res 2001;9:470: NC 37/34 cm ≈ BMI 25, 39.5/36.5 cm ≈ BMI 30)
-//   risk score s (0..1) = [0.3·male + 0.25·smooth(40,60,age) + 0.3·smooth(28,38,BMI) + 0.3·smooth(37,43,neck) + 0.2·smooth(88,115,waist)] / 1.35
+//   risk score s (0..1) = [0.3·male + 0.25·smooth(40,60,age) + 0.3·smooth(26,39,BMI) + 0.3·smooth(36,44,neck) + 0.2·smooth(85,118,waist)] / 1.35
 //     (the components of STOP-Bang: Chung F et al. Anesthesiology 2008;108:812 — male, age > 50, BMI > 35, neck > 40 cm;
-//      male:female ≈ 2-3:1, Young T et al. N Engl J Med 1993;328:1230)
+//      male:female ≈ 2-3:1, Young T et al. N Engl J Med 1993;328:1230). The smoothstep windows are deliberately wide so
+//      that the score (and the event rate below) does not swing more with a 10 % weight change than the literature supports.
 //   tiers: s < 0.35 low · 0.35-0.6 moderate · > 0.6 high (wording: «indicators fall in a range usually linked to…»)
 //   event rate (guide, never displayed as AHI) = 40 * s^1.3 /h when s ≥ 0.3, else no full obstructions;
-//     the scene is time-compressed: interval = clamp(600 / rate, 18, 90) s, event length = 10 + 10 * s s (10-20 s, AASM ≥ 10 s)
-//     a 10 % weight change moves the event rate by ~26-32 % (Peppard PE et al. JAMA 2000;284:3015) — our body-based score reproduces this order of magnitude
+//     the scene is time-compressed: interval = clamp(600 / rate, 18, 90) s, event length = 10 + 10 * s s (10-20 s, AASM ≥ 10 s);
+//     the first obstruction comes 5.5 s after falling asleep (shortest length) so a 24 s scene shows closure, desaturation
+//     and the arousal; later ones follow the interval (×0.75-1.25).
+//     weight effect: for the default body a 10 % loss lowers the modelled rate by ≈ 40 % — between the population estimate
+//     (10 % loss ↔ −26 %, Peppard PE et al. JAMA 2000;284:3015) and intervention results with larger losses (−50 to −70 %
+//     for 15-20 % loss, Greenburg DL et al. Am J Med 2009;122:535 meta-analysis); a 12 % loss drops the default body below
+//     the moderate tier, a 20 % loss below the event threshold.
 //   SpO2: awake 97 - 1.0 * s ; during an obstruction it falls after ~3 s to a nadir 97 - (5 + 9 * s) (≥ 82 %) over the event,
 //     recovers with tau ≈ 4 s after the arousal (typical 3-10 % dips per event; AASM scoring manual, Berry RB et al. 2012)
 //   airwayPatency awake = 1 - 0.18 * s ; asleep = 1 - 0.55 * s (loss of pharyngeal dilator tone), minus 0.1 * s on inspiration
@@ -149,7 +156,7 @@ export function estimate(p = {}) {
 
   /* sleep / upper airway */
   const neck = clamp((male ? 37 : 34) + 0.5 * (bmi - 25), 30, 52);
-  const osa = clamp((0.3 * male + 0.25 * smooth(40, 60, age) + 0.3 * smooth(28, 38, bmi) + 0.3 * smooth(37, 43, neck) + 0.2 * smooth(88, 115, waist)) / 1.35, 0, 1);
+  const osa = clamp((0.3 * male + 0.25 * smooth(40, 60, age) + 0.3 * smooth(26, 39, bmi) + 0.3 * smooth(36, 44, neck) + 0.2 * smooth(85, 118, waist)) / 1.35, 0, 1);
   const air = airwayFrom(osa);
   const fatNeck = clamp((neck - 34) / 12, 0, 1), tongueFat = clamp((bmi - 22) / 16, 0, 1);
 
@@ -191,9 +198,10 @@ const breathShape = (ph) => (ph < INSP ? 0.5 - 0.5 * Math.cos(Math.PI * ph / INS
 const flowShape = (ph) => (ph < INSP ? Math.sin(Math.PI * ph / INSP) : -0.72 * Math.sin(Math.PI * (ph - INSP) / (1 - INSP)));
 
 /* ---------- scenario state ---------- */
-const sleep = { on: false, depth: 0, nextAt: 0, ev: null, arousalT: -99, count: 0, longest: 0, clock: 0, spo2: 97, hrEv: 0 };
-const stairs = { on: false, body: 'today', phase: 'idle', simT: 0, hrD: 0, rrD: 0, effort: 0, steps: 0, result: null, E: null, peakHr: 0, peakRR: 0, k: 0 };
-const RATE = 3, CLIMB = 24;                         // stairs: time compression and climb length (sim seconds)
+const sleep = { on: false, depth: 0, nextAt: 0, first: true, ev: null, arousalT: -99, count: 0, longest: 0, clock: 0, spo2: 97, hrEv: 0 };
+const RATE = 3, CLIMB = 18;                         // stairs: time compression and climb length (sim seconds)
+const stairs = { on: false, body: 'today', phase: 'idle', simT: 0, hrD: 0, rrD: 0, effort: 0, steps: 0, result: null, E: null, peakHr: 0, peakRR: 0, climb: CLIMB, rate: RATE, base: null };
+const FIRST_EVENT_AT = 5.5;                         // s after the scene starts (sleep depth reaches 0.85 at ~3 s)
 
 /** start / stop the night scene (also followed automatically from ctx.state.sleep).
  *  Only the event / arousal state is reset here; sleep.depth eases down in step() with the same 1.6 s constant it
@@ -201,14 +209,15 @@ const RATE = 3, CLIMB = 24;                         // stairs: time compression 
 export function setSleep(on) {
   if (sleep.on === !!on) return;
   sleep.on = !!on; seed = 7777;
-  Object.assign(sleep, { nextAt: simT + 9, ev: null, arousalT: -99, count: 0, longest: 0, clock: 23 * 60 + 40, hrEv: 0 });
+  Object.assign(sleep, { nextAt: simT + FIRST_EVENT_AT, first: true, ev: null, arousalT: -99, count: 0, longest: 0, clock: 23 * 60 + 40, hrEv: 0 });
   phys.apneaEvent = false; phys.apneaProgress = 0;
 }
-/** stairs test with the 'today' or 'after' body; replayable */
+/** stairs test with the 'today' or 'after' body; replayable. A restart while a run is active keeps the current
+ *  HR / breathing excess (hrD, rrD, effort) so the pulse re-converges instead of jumping back to rest. */
 export function startStairs(body = 'today') {
-  Object.assign(stairs, { on: true, body, phase: 'climb', simT: 0, hrD: 0, rrD: 0, effort: 0, steps: 0, result: null, peakHr: 0, peakRR: 0 });
+  Object.assign(stairs, { on: true, body: body === 'after' ? 'after' : 'today', phase: 'climb', simT: 0, steps: 0, result: null, peakHr: 0, peakRR: 0 });
 }
-export function stopStairs() { Object.assign(stairs, { on: false, phase: 'idle', hrD: 0, rrD: 0, effort: 0 }); }
+export function stopStairs() { Object.assign(stairs, { on: false, phase: 'idle' }); }   // hrD / rrD / effort decay in step()
 
 export function build(ctx) { C = ctx; phys.ctx = ctx; }
 
@@ -266,12 +275,19 @@ export function step(f, t, dt) {
     } else {
       stairs.hrD *= Math.exp(-sdt / E.recoverTau); stairs.rrD *= Math.exp(-sdt / 20); stairs.effort *= Math.exp(-sdt / 10);
     }
+  } else if (stairs.hrD > 0.01 || stairs.rrD > 0.01 || stairs.effort > 0.001) {
+    const sdt = dt * RATE;                                                 // stopped mid-run: settle smoothly (≈ 3 real s), no pop
+    stairs.hrD *= Math.exp(-sdt / 8); stairs.rrD *= Math.exp(-sdt / 8); stairs.effort *= Math.exp(-sdt / 5);
   }
   const effort = clamp(stairs.effort, 0, 1);
-  /* while a test runs the resting baseline is the TEST body's (today / after), independent of the slider */
-  stairs.k = lerp(stairs.k, stairs.on ? 1 : 0, 1 - Math.exp(-dt / 1.2));
-  const SE = stairs.E || today, sk = stairs.k;
-  const hrBase = lerp(live.hrRest, SE.hrRest, sk), rrBase = lerp(live.rrRest, SE.rrRest, sk), tidalBase = lerp(live.tidalRest, SE.tidalRest, sk);
+  /* while a test runs the resting baseline is the TEST body's (today / after), independent of the slider; eased so that
+     starting, stopping or switching the body never jumps the pulse */
+  const SE = stairs.on ? stairs.E : null;
+  const tgt = SE ? [SE.hrRest, SE.rrRest, SE.tidalRest] : [live.hrRest, live.rrRest, live.tidalRest];
+  if (!stairs.base) stairs.base = tgt.slice();
+  const kb = 1 - Math.exp(-dt / 1.2);
+  for (let i = 0; i < 3; i++) stairs.base[i] += (tgt[i] - stairs.base[i]) * kb;
+  const [hrBase, rrBase, tidalBase] = stairs.base;
 
   /* ----- breathing ----- */
   let rr = rrBase + stairs.rrD;
@@ -282,13 +298,15 @@ export function step(f, t, dt) {
 
   /* obstructive events while asleep */
   if (sleep.on && sd > 0.85 && !sleep.ev && live.interval > 0 && simT >= sleep.nextAt) {
-    sleep.ev = { t0: simT, dur: live.eventDur * (0.85 + 0.3 * prnd()) };
+    sleep.ev = { t0: simT, dur: live.eventDur * (sleep.first ? 0.85 : 0.85 + 0.3 * prnd()) }; sleep.first = false;
   }
-  if (sleep.ev && (!sleep.on || live.interval === 0)) sleep.ev = null;   // weight loss during the scene ends the obstruction
+  if (sleep.ev && !sleep.on) sleep.ev = null;
   if (sleep.ev) {
     const el = simT - sleep.ev.t0, dur = sleep.ev.dur;
-    if (el >= dur) {                                                      // arousal: airway reopens, gasp, pulse jumps
-      sleep.arousalT = simT; sleep.count++; sleep.longest = Math.max(sleep.longest, dur); sleep.ev = null;
+    /* arousal: airway reopens, gasp, pulse jumps. Also the way out when weight loss during the scene takes the body
+       below the event threshold (interval 0): the obstruction is released by an arousal instead of vanishing silently */
+    if (el >= dur || (live.interval === 0 && el >= 2)) {
+      sleep.arousalT = simT; sleep.count++; sleep.longest = Math.max(sleep.longest, Math.min(el, dur)); sleep.ev = null;
       sleep.nextAt = simT + live.interval * (0.75 + 0.5 * prnd());
     } else {
       const closing = smooth(0, 1.4, el);

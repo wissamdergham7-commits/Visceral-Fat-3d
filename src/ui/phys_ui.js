@@ -40,11 +40,16 @@ const STYLE = `
   background:var(--panel);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);border:1px solid var(--line);border-radius:18px;padding:12px 14px 14px;
   pointer-events:auto;display:none;scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.18) transparent;box-shadow:0 20px 50px -20px #000}
 .phys-panel.show{display:block}
-#tourbar.show ~ #physRoot .phys-panel{bottom:calc(var(--pbot) + 104px)}
 #physRoot.split .phys-panel{top:auto;width:300px;max-height:45%}
+.phys-strip{display:flex;gap:6px;margin:6px 0 2px;align-items:stretch}
+.phys-strip .phys-canvas{flex:1 1 0;min-width:0;width:auto}
+.phys-stack{flex:none;width:88px;display:flex;flex-direction:column;gap:3px}
+.phys-stack .phys-kv{flex:1;padding:2px 3px 2px;display:flex;flex-direction:column;justify-content:center;min-height:0}
+.phys-stack .phys-kv b{font-size:12.5px;line-height:1.2}
+.phys-stack .phys-kv span{font-size:9px;line-height:1.2;white-space:nowrap}
 @media(max-width:640px){.phys-panel{right:10px;left:10px;width:auto;max-width:none;top:auto;bottom:var(--pbot);max-height:min(55%,calc(100% - var(--ptop) - var(--pbot)))}}
-.phys-panel h3{margin:0 24px 2px 0;font-size:16px;font-weight:800}
-.phys-hint{font-size:11.5px;color:var(--muted);margin-bottom:8px;line-height:1.5}
+.phys-panel h3{margin:0 24px 2px 0;font-size:16px;font-weight:800;line-height:1.45}
+.phys-hint{font-size:11.5px;color:var(--muted);margin-bottom:6px;line-height:1.5}
 .phys-x{position:absolute;top:8px;left:10px;border:0;background:transparent;color:var(--muted);font-size:18px;cursor:pointer;font-weight:800;font-family:inherit}
 .phys-live{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin:8px 0}
 .phys-kv{background:rgba(255,255,255,.05);border:1px solid var(--line);border-radius:12px;padding:6px 6px 5px;text-align:center;min-width:0}
@@ -82,7 +87,7 @@ const STYLE = `
 `;
 
 /* ---------- module state ---------- */
-let C, hooks, root, night, nightK = 0, current = null, lastText = -1, audio = null, soundOn = false, lastProfile = -1, lastArousal = 0, lastNow = 0, lastF = 0.5, lastT = 0, lastSplit = false;
+let C, hooks, root, night, clockEl, tourbar, nightK = 0, current = null, lastText = -1, audio = null, soundOn = false, lastProfile = -1, lastArousal = 0, lastNow = 0, lastF = 0.5, lastT = 0, lastSplit = false, lastTour = false;
 let frame = 0;
 const panels = {}, chips = {}, q = {};     // q[panel][key] -> element
 const traces = {};                         // sweep traces per canvas
@@ -93,7 +98,10 @@ export function build(ctx, h) {
   C = ctx; hooks = h || {};
   const style = document.createElement('style'); style.id = 'physStyle'; style.textContent = STYLE; document.head.appendChild(style);
   root = el('<div id="physRoot"></div>');
-  night = el('<div id="physNight"><i class="stars"></i><div class="moon"></div><div class="clock"><span data-k="clock">00:00</span><small>مشهد ليلي مُسرَّع</small></div><span class="zz">z</span><span class="zz b">z</span><span class="zz c">Z</span></div>');
+  night = el('<div id="physNight"><i class="stars"></i><div class="moon"></div><div class="clock"><span data-k="clock">23:40</span><small>مشهد ليلي مُسرَّع</small></div><span class="zz">z</span><span class="zz b">z</span><span class="zz c">Z</span></div>');
+  night.style.display = 'none';                       // hidden until the night scene starts (show('sleep') or ctx.state.sleep)
+  clockEl = night.querySelector('[data-k=clock]');
+  tourbar = $('tourbar');
   root.appendChild(night);
   panels.bp = el(`<div class="phys-panel" data-panel="bp"><button class="phys-x" aria-label="إغلاق">✕</button>
     <h3>🩺 الضغط الشرياني</h3>
@@ -137,14 +145,16 @@ export function build(ctx, h) {
   </div>`);
   panels.sleep = el(`<div class="phys-panel" data-panel="sleep"><button class="phys-x" aria-label="إغلاق">✕</button>
     <h3>😴 النوم والشخير</h3>
-    <div class="phys-hint">مقطع جانبي للحلق أثناء النوم: ليش بتشخر وليش بيوقف النفَس لثوانٍ · مشهد توعوي مُسرَّع، ليس تشخيصاً</div>
+    <div class="phys-hint">ليش بتشخر وليش بيوقف نفَسك · مشهد توعوي، ليس تشخيصاً</div>
     <canvas class="phys-canvas" data-c="pharynx"></canvas>
-    <div class="phys-live">
-      <div class="phys-kv" data-k="airway"><b>—</b><span>مجرى<br>الهواء</span></div>
-      <div class="phys-kv" data-k="spo2"><b>—</b><span>أوكسجين الدم SpO₂<br>في المشهد</span></div>
-      <div class="phys-kv" data-k="hr"><b>—</b><span>النبض/د<br>في المشهد</span></div>
+    <div class="phys-strip">
+      <canvas class="phys-canvas" data-c="strip"></canvas>
+      <div class="phys-stack">
+        <div class="phys-kv" data-k="airway"><b>—</b><span>مجرى الهواء</span></div>
+        <div class="phys-kv" data-k="spo2"><b>—</b><span>أوكسجين الدم بالمشهد</span></div>
+        <div class="phys-kv" data-k="hr"><b>—</b><span>النبض/د بالمشهد</span></div>
+      </div>
     </div>
-    <canvas class="phys-canvas" data-c="strip"></canvas>
     <div class="phys-rowx"><span data-k="events">توقفات في المشهد: ٠</span><button class="phys-btn small" data-k="sound">🔇 الصوت مطفأ</button></div>
     <div class="phys-tier" data-k="tier"></div>
     <div class="phys-cmp">
@@ -162,7 +172,7 @@ export function build(ctx, h) {
     panels[k].querySelector('.phys-x').onclick = hide;
     panels[k].querySelectorAll('canvas[data-c]').forEach((c) => { const tr = makeTrace(c); traces[c.dataset.c] = tr; });
   }
-  traces.bpwave.cssH = 104; traces.stairs.cssH = 160; traces.pharynx.cssH = 300; traces.strip.cssH = 118; traces.cmp.cssH = 150;
+  traces.bpwave.cssH = 104; traces.stairs.cssH = 160; traces.pharynx.cssH = 168; traces.strip.cssH = 105; traces.cmp.cssH = 150;
   ctx.viewer.appendChild(root);
 
   /* chips in the existing bar */
@@ -194,13 +204,19 @@ export function build(ctx, h) {
       lastT += 0.05; update(st.fCur, lastT, sim.step(st.fCur, lastT, 0.05));
     }
   };
-  window.__physUI = { show, hide, sim, advance };
+  window.__physUI = { show, hide, sim, advance, traces };          // traces: canvas sweeps (tests may enlarge cssH for zoomed captures)
 }
 
-/* keep panels between the chips bar and the HUD */
+/* keep panels between the chips bar and the HUD (or the tour bar while the tour runs: measured, not a fixed offset) */
 function layout() {
   const bar = C.viewer.querySelector('.chips'), hud = C.viewer.querySelector('.hud');
-  const top = bar ? bar.offsetTop + bar.offsetHeight + 8 : 52, bot = hud ? hud.offsetHeight + 20 : 128;
+  const top = bar ? bar.offsetTop + bar.offsetHeight + 8 : 52;
+  let bot = hud ? hud.offsetHeight + 20 : 128;
+  if (tourbar && tourbar.classList.contains('show')) {
+    const vr = C.viewer.getBoundingClientRect();
+    const tbTop = tourbar.offsetParent === C.viewer ? tourbar.offsetTop : tourbar.getBoundingClientRect().top - vr.top;
+    if (tbTop > 0) bot = Math.max(bot, Math.round(vr.height - tbTop) + 8);
+  }
   root.style.setProperty('--ptop', top + 'px'); root.style.setProperty('--pbot', bot + 'px');
   if (current) fitAll(current);
 }
@@ -236,13 +252,14 @@ function fitAll(panel) {
 export function update(f, t, phys) {
   lastF = f; lastT = t;
   const now = performance.now(), dtWall = clamp((now - lastNow) / 1000, 0, 0.5); lastNow = now;
-  /* panel docking follows the page mode (split view keeps both bodies visible) */
-  const split = C.state.mode === 'split';
+  /* panel docking follows the page mode (split view keeps both bodies visible) and the tour bar */
+  const split = C.state.mode === 'split', tourOn = !!(tourbar && tourbar.classList.contains('show'));
   if (split !== lastSplit) { lastSplit = split; root.classList.toggle('split', split); layout(); }
+  if (tourOn !== lastTour) { lastTour = tourOn; layout(); setTimeout(layout, 400); }   // again after the bar's slide-in transition
   /* night lighting + overlay (eased on wall-clock time), driven by ctx.state.sleep — set by show('sleep') or by the
-     integrator / tour directly — and still running while fading out after hide() */
+     integrator / tour directly — and still running while fading out after hide(); display:none whenever fully day */
   const target = C.state.sleep ? 1 : 0;
-  if (target === 1 && night.style.display === 'none') night.style.display = '';
+  if (target === 1 && night.style.display === 'none') { night.style.display = ''; void night.offsetWidth; }   // reflow so the opacity transition runs
   if (Math.abs(nightK - target) > 1e-3) {
     nightK = lerp(nightK, target, 1 - Math.exp(-dtWall * 1.6));
     if (Math.abs(nightK - target) < 1e-3) nightK = target;
@@ -250,12 +267,23 @@ export function update(f, t, phys) {
     night.style.opacity = nightK.toFixed(3);
     if (nightK === 0) night.style.display = 'none';
   }
+  frame++;
+  if (nightK > 0 && (frame & 7) === 0) {                                      // compressed night clock (also without the panel)
+    const m = Math.floor(phys.nightClock / 60) % 24, s = Math.floor(phys.nightClock % 60);
+    clockEl.textContent = String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+  }
   if (audio && soundOn) driveAudio(phys);
   if (!current) return;
-  const dt = phys.dt || 0.016;
+  const dt = phys.dt || 0.016, perf = C.state.perf ?? 2;
   if (current === 'bp') drawBP(traces.bpwave, phys, dt);
   if (current === 'breath') drawStairs(traces.stairs, phys, t);
-  if (current === 'sleep') { drawPharynxLive(traces.pharynx, phys, t, dt); drawStrip(traces.strip, phys, dt); if ((frame++ & 1) === 0) drawCompare(traces.cmp, phys, t, dt * 2); }
+  if (current === 'sleep') {
+    /* ctx.state.perf: 2 = every frame, 1 = compare section at 1/4 rate, 0 = pharynx at half rate + compare at 1/8 */
+    const skipPh = perf === 0 && (frame & 1), every = perf >= 2 ? 2 : perf === 1 ? 4 : 8;
+    if (!skipPh) drawPharynxLive(traces.pharynx, phys, t, dt * (perf === 0 ? 2 : 1));
+    drawStrip(traces.strip, phys, dt);
+    if (frame % every === 0) drawCompare(traces.cmp, phys, t, dt * every);
+  }
   if (t - lastText > 0.25) { lastText = t; texts(phys); }
 }
 
@@ -289,7 +317,7 @@ function texts(phys) {
     if (S.on) {
       const who = S.body === 'after' ? 'بعد النزول' : 'بجسمك اليوم';
       if (S.phase === 'climb') Q.status.textContent = `${who}: عم تطلع… النبض ≈ ${AR(Math.round(phys.hr))} · النفَس ≈ ${AR(Math.round(phys.breathRate))}/د`;
-      else if (S.phase === 'recover') Q.status.textContent = `${who}: وصلت فوق. عم ترتاح… النبض ≈ ${AR(Math.round(phys.hr))} (مرّ ${AR(Math.round(S.simT - 24))} ث)`;
+      else if (S.phase === 'recover') Q.status.textContent = `${who}: وصلت فوق. عم ترتاح… النبض ≈ ${AR(Math.round(phys.hr))} (مرّ ${AR(Math.round(S.simT - S.climb))} ث)`;
       else if (S.result) Q.status.textContent = `${who}: رجع النبض يهدا خلال ≈ ${R([Math.round(S.result.recoverT * 0.9 / 5) * 5, Math.round(S.result.recoverT * 1.1 / 5) * 5], ' ث')} · ذروة النفَس ≈ ${AR(Math.round(S.result.peakRR))}/د`;
     }
     if (lastProfile !== C.state.profileVersion) {
@@ -300,15 +328,13 @@ function texts(phys) {
   }
   if (current === 'sleep') {
     const Q = q.sleep, p = phys.airwayPatency;
-    const state = phys.apneaEvent ? ['مغلق — توقّف', 'bad'] : phys.arousal > 0.5 ? ['انفتح — شهقة', 'warn'] : phys.snoreIntensity > 0.12 ? ['ضيّق — يهتز', 'warn'] : p < 0.7 ? ['ضيّق', 'warn'] : ['مفتوح', 'ok'];
+    const state = phys.apneaEvent ? ['مغلق ⛔', 'bad'] : phys.arousal > 0.5 ? ['انفتح 😮', 'warn'] : phys.snoreIntensity > 0.12 ? ['ضيّق يهتز', 'warn'] : p < 0.7 ? ['ضيّق', 'warn'] : ['مفتوح', 'ok'];
     kv(Q.airway, state[0], state[1]);
     kv(Q.spo2, R(pm(phys.spo2, 1), '٪'), phys.spo2 < 90 ? 'bad' : phys.spo2 < 94 ? 'warn' : 'ok');
     kv(Q.hr, R(pm(phys.hr, 2)), phys.arousal > 0.5 ? 'warn' : '');
     Q.events.innerHTML = `توقفات في المشهد: <b>${AR(phys.eventCount)}</b>` + (phys.longestEvent ? ` · أطول توقف ≈ ${AR(Math.round(phys.longestEvent))} ث` : '');
     Q.tier.textContent = SLEEP_TIER[phys.tier] + ` · محيط الرقبة التقديري ≈ ${R([Math.round(phys.neck - 1.5), Math.round(phys.neck + 1.5)], ' سم')}`;
     Q.tier.className = 'phys-tier ' + CAT[phys.tier];
-    const m = Math.floor(phys.nightClock / 60) % 24, s = Math.floor(phys.nightClock % 60);
-    night.querySelector('[data-k=clock]').textContent = String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
     if (lastProfile !== C.state.profileVersion) {
       Q.afterT.textContent = afterT;
       const lvl = (x) => (x < 0.3 ? 0 : x < 0.6 ? 1 : 2);
@@ -327,7 +353,7 @@ const pm = (x, d) => { const r = Math.round(x); return [r - d, r + d]; };      /
 function makeTrace(c) { return { c, g: c.getContext('2d'), x: 0, w: 0, h: 0, dpr: 1, cssH: 100, buf: null }; }
 function fitCanvas(tr) {
   const w = Math.max(120, Math.round(tr.c.clientWidth || (tr.c.parentElement && tr.c.parentElement.clientWidth - 28) || 300));
-  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  const dpr = (C.state.perf ?? 2) >= 2 ? Math.min(2, window.devicePixelRatio || 1) : 1;   // slow devices: 1x canvases
   if (tr.w !== w || tr.h !== tr.cssH || tr.dpr !== dpr) {
     tr.c.width = Math.round(w * dpr); tr.c.height = Math.round(tr.cssH * dpr); tr.c.style.height = tr.cssH + 'px';
     tr.w = w; tr.h = tr.cssH; tr.dpr = dpr; tr.buf = null; tr.x = 0;
@@ -380,20 +406,21 @@ function drawStairs(tr, phys, t) {
   if (tr.w === 0) fitCanvas(tr);
   const g = begin(tr), w = tr.w, h = tr.h, S = phys.stairs, E = (S.on && S.E) || phys.today;
   const load = E.load, running = S.on && S.phase !== 'idle';
-  /* staircase: 12 steps rising from left-bottom to right-top across 62 % of the width */
-  const sx = 10, sy = h - 12, nSteps = 12, stepW = (w * 0.62 - sx) / nSteps, stepH = (h - 70) / nSteps;
+  /* staircase: 12 steps rising from right-bottom to left-top (RTL reading direction) across 62 % of the width, so the
+     numbers column at the top-right sits above the low steps and never collides with the figure at the top */
+  const sx = w - 10, sy = h - 12, nSteps = 12, stepW = (w * 0.62 - 10) / nSteps, stepH = (h - 70) / nSteps;
   g.fillStyle = 'rgba(255,255,255,.06)'; g.strokeStyle = 'rgba(255,255,255,.22)'; g.lineWidth = 1;
   g.beginPath(); g.moveTo(sx, sy);
-  for (let i = 0; i < nSteps; i++) { g.lineTo(sx + i * stepW, sy - (i + 1) * stepH); g.lineTo(sx + (i + 1) * stepW, sy - (i + 1) * stepH); }
-  g.lineTo(sx + nSteps * stepW, sy); g.closePath(); g.fill(); g.stroke();
+  for (let i = 0; i < nSteps; i++) { g.lineTo(sx - i * stepW, sy - (i + 1) * stepH); g.lineTo(sx - (i + 1) * stepW, sy - (i + 1) * stepH); }
+  g.lineTo(sx - nSteps * stepW, sy); g.closePath(); g.fill(); g.stroke();
   g.fillStyle = 'rgba(154,168,191,.8)'; g.textAlign = 'left'; g.direction = 'rtl';
-  g.fillText('الطابق ٢', sx + nSteps * stepW - 40, sy - nSteps * stepH - 6);
-  /* figure position along the climb */
-  const prog = !S.on ? 0 : S.phase === 'climb' ? clamp(S.simT / 24, 0, 1) : 1;
-  const idx = prog * nSteps, fx = sx + idx * stepW + stepW * 0.5, fy = sy - Math.ceil(idx) * stepH;
+  g.fillText('الطابق ٢', sx - nSteps * stepW - 2, sy - nSteps * stepH - 6);
+  /* figure position along the climb (faces left = climbing direction) */
+  const prog = !S.on ? 0 : S.phase === 'climb' ? clamp(S.simT / S.climb, 0, 1) : 1;
+  const idx = prog * nSteps, fx = sx - idx * stepW - stepW * 0.5, fy = sy - Math.ceil(idx) * stepH;
   const cad = S.phase === 'climb' ? Math.sin(S.steps * Math.PI) : 0, br = phys.breath, bob = running ? 1.5 * br : 0.6 * br;
   const belly = 3 + 7 * load, ink = css(palette.figureInk);
-  g.save(); g.translate(fx, fy - bob); g.scale(1.45, 1.45);
+  g.save(); g.translate(fx, fy - bob); g.scale(-1.45, 1.45);
   g.strokeStyle = ink; g.lineWidth = 2; g.lineCap = 'round';
   /* legs */
   g.beginPath(); g.moveTo(0, -14); g.lineTo(-4 + 5 * cad, -2 + Math.abs(cad) * 2); g.moveTo(0, -14); g.lineTo(4 - 5 * cad, -1); g.stroke();
@@ -596,32 +623,31 @@ function drawPharynxLive(tr, phys, t, dt) {
   const S = { patency: phys.airwayPatency, fatNeck: L.fatNeck, tongueFat: L.tongueFat, snore: phys.snoreIntensity, apnea: phys.apneaEvent ? 1 : 0, flow: phys.flow, vib: sc.vib, dt };
   const s = Math.min((h - 8) / 220, (w - 104) / 200), ox = 4, oy = 4;
   g.save(); g.translate(ox, oy); g.scale(s, s); drawPharynx(g, S, sc); g.restore();
-  /* labels (right column, RTL) with leaders */
+  /* right column (RTL): axial inset — WHERE the fat sits (lateral parapharyngeal pads + tongue base) — then labels with
+     leaders, then the state banner; sized to fit the 184 px canvas (labels that do not fit are dropped, least important last) */
   const G = pharynxGeom(S), lx = w - 6;
-  /* axial inset at the top of the right column: WHERE the fat sits (lateral parapharyngeal pads + tongue base) */
-  const colL = ox + 206 * s, colW = w - colL, ir = clamp(Math.min(colW / 2 - 6, 40), 22, 40), icx = w - 6 - ir, icy = 18 + ir;
-  g.textAlign = 'right'; g.fillStyle = 'rgba(154,168,191,.9)'; g.font = '700 10px Cairo, system-ui, sans-serif'; g.fillText('مقطع عرضي عند الحلق', lx, 12);
+  const colL = ox + 206 * s, colW = w - colL, ir = clamp(Math.min(colW / 2 - 8, 26), 20, 26), icx = w - 6 - ir, icy = 15 + ir;
+  g.textAlign = 'right'; g.fillStyle = 'rgba(154,168,191,.9)'; g.font = '700 9.5px Cairo, system-ui, sans-serif'; g.fillText('مقطع عرضي عند الحلق', lx, 11);
   drawAxial(g, icx, icy, ir, S);
-  const cap = 'دهون حوالين البلعوم', cap2 = '(من الجانبين)', cy2 = icy + ir * 0.92 + 14;
-  g.font = '700 10.5px Cairo, system-ui, sans-serif';
-  const tw = g.measureText(cap).width + 10; g.fillStyle = 'rgba(6,10,22,.72)'; rr(g, w - tw - 2, cy2 - 11, tw, 27, 5); g.fill();
-  g.fillStyle = css(palette.neckFat); g.fillText(cap, lx, cy2); g.fillText(cap2, lx, cy2 + 12);
-  /* labels (right column, ordered by depth) with leaders */
+  const cap = 'دهون حوالين البلعوم (من الجانبين)', cy2 = icy + ir + 12;
+  g.font = '700 10px Cairo, system-ui, sans-serif';
+  const tw = g.measureText(cap).width + 8; g.fillStyle = 'rgba(6,10,22,.72)'; rr(g, w - tw - 2, cy2 - 10, tw, 14, 4); g.fill();
+  g.fillStyle = css(palette.neckFat); g.fillText(cap, lx, cy2);
   const items = [
     ['سقف الحلق اللين واللهاة', G.palate(96) - 6, 96], ['مجرى الهواء', (G.ant(120) + G.wallX) / 2, 120], ['قاعدة اللسان', G.tongue(130) - 14, 130],
-    ['العمود الفقري', 179, 160], ['الحنجرة والقصبة', 108, 200],
-  ], ty0 = cy2 + 34;
-  g.font = '700 11px Cairo, system-ui, sans-serif';
+    ['الحنجرة والقصبة', 108, 200], ['العمود الفقري', 179, 160],
+  ], ty0 = cy2 + 19, dy = 18.5;
+  g.font = '700 10.5px Cairo, system-ui, sans-serif';
   items.forEach(([txt, ux, uy], i) => {
-    const px = ox + ux * s, py = oy + uy * s, ty = ty0 + i * 25;
+    const px = ox + ux * s, py = oy + uy * s, ty = ty0 + i * dy;
+    if (ty > h - 22) return;
     g.strokeStyle = 'rgba(255,255,255,.35)'; g.lineWidth = 1; g.beginPath(); g.moveTo(px, py); g.lineTo(colL, ty - 4); g.lineTo(lx - 2, ty - 4); g.stroke();
     g.fillStyle = 'rgba(255,255,255,.55)'; g.beginPath(); g.arc(px, py, 2, 0, 7); g.fill();
     g.fillStyle = '#eef2f8'; g.fillText(txt, lx, ty);
   });
   /* state banner */
-  const banner = phys.apneaEvent ? ['انسداد كامل — توقّف النفَس', palette.apneaFlag] : phys.arousal > 0.5 ? ['استيقاظ قصير: شهقة والمجرى بينفتح', palette.arousalFlag] : phys.snoreIntensity > 0.12 ? ['الهوا بيمرّ بممر ضيق → اهتزاز = شخير', palette.soundWave] : phys.sleepDepth > 0.6 ? ['نائم: العضلات مرتخية والممر أضيق', palette.spo2Ok] : ['عم ينام…', 0x9aa8bf];
-  g.font = '800 12.5px Cairo, system-ui, sans-serif'; g.fillStyle = css(banner[1]); g.fillText(banner[0], lx, h - 10);
-  if (phys.apneaEvent) { g.fillStyle = rgba(palette.apneaFlag, 0.9); g.font = '800 11px Cairo, system-ui, sans-serif'; g.fillText(AR(Math.round(phys.apneaProgress * 100)) + '٪ من التوقف', lx, h - 26); }
+  const banner = phys.apneaEvent ? [`انسداد كامل — توقّف النفَس · ${AR(Math.round(phys.apneaProgress * 100))}٪`, palette.apneaFlag] : phys.arousal > 0.5 ? ['استيقاظ قصير: شهقة والمجرى بينفتح', palette.arousalFlag] : phys.snoreIntensity > 0.12 ? ['ممر ضيق → اهتزاز = شخير', palette.soundWave] : phys.sleepDepth > 0.6 ? ['نائم: العضلات مرتخية والممر أضيق', palette.spo2Ok] : ['عم ينام…', 0x9aa8bf];
+  g.font = '800 12px Cairo, system-ui, sans-serif'; g.fillStyle = css(banner[1]); g.fillText(banner[0], lx, h - 8);
 }
 
 /* ---------- sleep strip: sound / airflow / SpO2 sweep (polysomnography-like) ---------- */
@@ -639,7 +665,7 @@ function drawStrip(tr, phys, dt) {
     B.ev[col] = phys.apneaEvent ? 1 : 0; B.ar[col] = phys.arousal > 0.92 && lastArousal < 0.92 ? 1 : 0;
   }
   lastArousal = phys.arousal;
-  const g = begin(tr), rows = [[6, 30], [44, 32], [84, 28]], head = Math.floor(tr.x), gap = 12;
+  const g = begin(tr), rows = [[4, 25], [35, 29], [71, 28]], head = Math.floor(tr.x), gap = 12;   // sound / airflow / SpO2 in 105 px
   /* apnoea bands (+ a solid flag bar along the top edge so the breathing gap reads at a glance) + arousal ticks */
   for (let i = 0; i < w; i++) {
     if (B.ev[i]) { g.fillStyle = rgba(palette.apneaFlag, 0.25); g.fillRect(i, 2, 1, h - 4); g.fillStyle = rgba(palette.apneaFlag, 0.95); g.fillRect(i, 0, 1, 3.5); }

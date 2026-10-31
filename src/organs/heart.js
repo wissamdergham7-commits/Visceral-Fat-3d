@@ -1,8 +1,9 @@
 // organs/heart.js — heart: sculpted ventricular mass split into an anterior "lid" (fresnel cut-away when the camera
-// is close) and a posterior body; chambers with real wall thickness (planar cut face with LV / RV holes, septum tint,
-// endocardial bowls, papillary muscles, chordae, moderator band); four animated valves (mitral, tricuspid, aortic,
-// pulmonary); instanced blood particles (deoxygenated RA->RV->pulmonary trunk, oxygenated LA->LV->aorta) timed to the
-// cardiac cycle; hollow atria with both auricles; coronary tree with finer branches. Everything beats from `phys`.
+// is close, when the heart is the orbit target or when a close frame holds the whole heart) and a posterior body; chambers
+// with real wall thickness (planar cut face with LV / RV holes, septum tint, endocardial bowls, papillary muscles, chordae,
+// moderator band); four animated valves (mitral, tricuspid, aortic, pulmonary); instanced blood particles (deoxygenated
+// RA->RV->pulmonary trunk, oxygenated LA->LV->aorta) timed to the cardiac cycle; hollow atria with both auricles; coronary
+// tree with finer branches. Everything beats from `phys`. Publishes anchors.heartCut / heartCutPlane for organs/fat.js.
 import { THREE, P, clamp, lerp, smooth, noise3, rnd, setSeed, deform, vtube, add } from '../core/ctx.js';
 import { palette, OrganMat, heartVeinTex } from '../core/style.js';
 
@@ -159,13 +160,16 @@ function frame(n) {
 }
 
 /* ---------- module state ---------- */
-let C, heartG, ventG, atriaG, detailG;
-const fadeMats = [];
+let C, heartG, ventG, atriaG, detailG, twigG;
+const fadeMats = [], atrialDetail = [];                 // atrialDetail: RA / LA cavity linings (children of the atrial walls)
 let mitral, tricuspid, aortic, pulmonary;
 let chords = [];                                       // { mesh, tip: Vector3, valve, k, su }
 let bloodOxy, bloodDeoxy;                              // { inst, mat, parts, curves }
-let cutCur = 0, lastT = 0, lastAV = -1;
+let cutCur = 0, lastT = 0, lastAV = -1, lastCutPub = -1, lastDetail = null;
 const _v = new THREE.Vector3(), _w = new THREE.Vector3(), UP = P(0, 1, 0);
+/* published for organs/fat.js (epicardial lobules are children of ventG, i.e. heart-local): the cut plane and the live
+ * cut amount. removed(p) = 1 for a heart-local point on the ghosted anterior wall, 0 behind the cut (soft 0.08 band). */
+const heartCutPlane = { n: CUT_N.clone(), d: CUT_D, removed: (p) => smooth(CUT_D - 0.08, CUT_D, p.dot(CUT_N)) };
 
 /* ---------- valves ---------- */
 /** AV valve: leaflets hinge on the annulus, swing down into the ventricle when open (o = 1) */
@@ -210,7 +214,7 @@ function makeBlood(curves, count, color, keyPts) {
     return { uAV: find(keyPts[0]), uSL: find(keyPts[1]) };
   });
   const parts = [];
-  for (let i = 0; i < count; i++) parts.push({ cv: i % curves.length, u: rnd(), a: rnd() * Math.PI * 2, k: Math.sqrt(rnd()), s: 0.03 + 0.02 * rnd(), spin: (rnd() - 0.5) * 2 });
+  for (let i = 0; i < count; i++) parts.push({ cv: i % curves.length, u: rnd(), a: rnd() * Math.PI * 2, k: Math.sqrt(rnd()), s: 0.02 + 0.014 * rnd(), spin: (rnd() - 0.5) * 2, j: rnd() * 6.3 });
   return { inst, mat, parts, curves, marks, base: new THREE.Color(color) };
 }
 /** chamber radius available to particles along the path (atrium → valve → ventricle → valve → vessel) */
@@ -235,8 +239,9 @@ function stepBlood(B, dt, atr, avOpen, slOpen, eject) {
     if (p.u >= 1) { p.u = rnd() * 0.04; p.a = rnd() * Math.PI * 2; p.k = Math.sqrt(rnd()); }
     cv.getPointAt(p.u, d.position); cv.getTangentAt(p.u, _v);
     _w.crossVectors(_v, UP).normalize(); _v.crossVectors(_w, _v).normalize();     // _w, _v : lateral frame
-    const r = chamberR(p.u, m) * p.k;
-    d.position.addScaledVector(_w, Math.cos(p.a) * r).addScaledVector(_v, Math.sin(p.a) * r);
+    /* lateral wander along the path (reads as a stream rather than a string of beads) */
+    const r = chamberR(p.u, m) * p.k * (1 + 0.18 * Math.sin(p.u * 37 + p.j)), wob = 0.22 * Math.sin(p.u * 23 + p.j * 1.7);
+    d.position.addScaledVector(_w, Math.cos(p.a + wob) * r).addScaledVector(_v, Math.sin(p.a + wob) * r);
     d.rotation.set(0, 0, 0); d.scale.setScalar(p.s * (1 + 0.25 * eject)); d.updateMatrix();
     B.inst.setMatrixAt(i, d.matrix);
   }
@@ -248,7 +253,8 @@ export function build(ctx) {
   C = ctx; setSeed(7001);
   heartG = new THREE.Group(); heartG.position.copy(heartPos); heartG.rotation.set(-0.38, 0, 0.58);
   ctx.groups.heart.add(heartG);
-  ventG = new THREE.Group(); atriaG = new THREE.Group(); detailG = new THREE.Group(); heartG.add(ventG, atriaG); ventG.add(detailG);
+  ventG = new THREE.Group(); atriaG = new THREE.Group(); detailG = new THREE.Group(); twigG = new THREE.Group();
+  heartG.add(ventG, atriaG); ventG.add(detailG, twigG);
 
   /* --- ventricular mass: posterior body (solid) + anterior lid (fresnel cut-away) sharing an exact cut edge --- */
   const shellOpts = { roughness: 0.3, clearcoat: 0.95, clearcoatRoughness: 0.18, map: heartVeinTex, emissiveIntensity: 0.1 };
@@ -267,12 +273,12 @@ export function build(ctx) {
     const g = deform(new THREE.SphereGeometry(1, 40, 30), (v) => v.multiplyScalar(1 + 0.03 * noise3(v.x * 5, v.y * 5, v.z * 5)));
     const m = add(g, mat, parent, 'heart'); m.position.set(x, y, z); m.scale.set(sx, sy, sz); m.rotation.z = rz; return m;
   };
-  lobe(-0.5, 0.58, 0.22, 0.48, 0.4, 0.45, 0, atriumMat, atriaG).renderOrder = -1;          // right atrium
-  lobe(0.33, 0.66, -0.1, 0.52, 0.44, 0.5, 0, atriumMat, atriaG).renderOrder = -1;          // left atrium
+  const ra = lobe(-0.5, 0.58, 0.22, 0.48, 0.4, 0.45, 0, atriumMat, atriaG), la = lobe(0.33, 0.66, -0.1, 0.52, 0.44, 0.5, 0, atriumMat, atriaG);   // RA, LA (atriaG.children[0..1]: vessels.js / lungs.js read them)
+  ra.renderOrder = la.renderOrder = -1;
   lobe(-0.62, 0.42, 0.5, 0.24, 0.16, 0.2, 0.5, auricleMat, atriaG);                       // right auricle
   lobe(0.5, 0.46, 0.38, 0.27, 0.15, 0.2, -0.4, auricleMat, atriaG);                       // left auricle
-  lobe(-0.5, 0.58, 0.22, 0.40, 0.33, 0.37, 0, endoMat, detailG);                          // RA cavity (seen from inside)
-  lobe(0.33, 0.66, -0.1, 0.43, 0.36, 0.41, 0, endoMat, detailG);                          // LA cavity
+  /* cavity linings (seen from inside) are children of their own wall so they contract with it exactly */
+  atrialDetail.push(lobe(0, 0, 0, 0.40 / 0.48, 0.33 / 0.40, 0.37 / 0.45, 0, endoMat, ra), lobe(0, 0, 0, 0.43 / 0.52, 0.36 / 0.44, 0.41 / 0.5, 0, endoMat, la));
 
   /* --- chambers: endocardial bowls below the cut, planar cut face with the two holes (wall thickness + septum) --- */
   const lv = splitByPlane(deform(new THREE.SphereGeometry(1, 56, 40), lvShape), CUT_N, CUT_D);
@@ -350,11 +356,11 @@ export function build(ctx) {
   bloodDeoxy = makeBlood([
     crv([P(-0.46, 0.98, 0.20), P(-0.47, 0.72, 0.21), P(-0.50, 0.50, 0.22), ...rvRun]),
     crv([P(-0.66, 0.02, -0.18), P(-0.62, 0.32, -0.04), P(-0.52, 0.48, 0.14), ...rvRun]),
-  ], 110, palette.bloodDeoxy, [TV.c, PV.c]);
+  ], 150, palette.bloodDeoxy, [TV.c, PV.c]);
   bloodOxy = makeBlood([
     crv([P(0.25, 0.72, -0.48), P(0.28, 0.66, -0.26), P(0.32, 0.62, -0.12), ...lvRun]),
     crv([P(0.78, 0.40, -0.42), P(0.56, 0.45, -0.23), P(0.40, 0.56, -0.14), ...lvRun]),
-  ], 110, palette.bloodOxy, [MV.c, AO.c]);
+  ], 150, palette.bloodOxy, [MV.c, AO.c]);
 
   /* --- coronary tree. Main trunks (LAD, RCA, Cx, diagonal, acute marginal, great cardiac vein) + finer branches:
    * posterior descending, obtuse marginal, septal perforators, middle cardiac vein, small twigs. Vessels that live mostly
@@ -363,35 +369,43 @@ export function build(ctx) {
   const artMat = OrganMat(palette.coronaryArtery, artOpts), veinMat = OrganMat(palette.coronaryVein, veinOpts);
   const artGhost = fadeMat(palette.coronaryArtery, artOpts, 0.18, 0.3), veinGhost = fadeMat(palette.coronaryVein, veinOpts, 0.18, 0.3);
   fadeMats.push(artGhost, veinGhost);
-  const vessel = (pts, rFn, segs, radial, vein = false) => {
+  const vessel = (pts, rFn, segs, radial, vein = false, parent = ventG) => {
     const anterior = pts.filter((p) => p.dot(CUT_N) > CUT_D - 0.08).length / pts.length > 0.55;
-    const m = add(vtube(pts, rFn, segs, radial), vein ? (anterior ? veinGhost : veinMat) : (anterior ? artGhost : artMat), ventG, 'heart');
+    const m = add(vtube(pts, rFn, segs, radial), vein ? (anterior ? veinGhost : veinMat) : (anterior ? artGhost : artMat), parent, 'heart');
     if (anterior) m.renderOrder = -1;
     return m;
   };
   const path = (n, thFn, phFn, s = 1.03) => { const pts = []; for (let i = 0; i <= n; i++) { const a = i / n; pts.push(heartSurf(thFn(a), phFn(a), s)); } return pts; };
-  vessel(path(16, (a) => 0.1 - (0.55 + 2.35 * a) * 0.06, (a) => 0.55 + 2.35 * a), (u) => 0.045 * (1 - 0.5 * u), 60, 8);                 // LAD
-  vessel(path(16, (a) => -0.1 - 2.3 * a, (a) => 1.14 + 0.15 * a, 1.035), (u) => 0.045 * (1 - 0.4 * u), 60, 8);                           // RCA
-  vessel(path(14, (a) => 0.15 + 2 * a, () => 1.12, 1.035), (u) => 0.04 * (1 - 0.4 * u), 60, 8);                                         // circumflex
+  /* groove lines shared with organs/fat.js: anterior interventricular (LAD line), AV groove ph 1.12, posterior interventricular PIV */
+  const PIV = Math.PI + 0.2, CRUX = PIV - Math.PI * 2;                                    // crux = where the posterior AV groove meets the PIV (same angle, negative branch)
+  const LADth = (a) => 0.1 - (0.55 + 2.35 * a) * 0.06, LADph = (a) => 0.55 + 2.35 * a;
+  const RCAth = (a) => -0.1 + (CRUX + 0.1) * a, RCAph = (a) => 1.14 + 0.16 * a;          // right AV groove: anterior right -> round the right border -> the crux
+  const PDAth = (a) => PIV + 0.05 * Math.sin(a * 5.2 + 0.4) * smooth(0, 0.25, a), PDAph = (a) => 1.3 + 1.55 * a;   // posterior interventricular groove, crux -> apex, slight wander
+  const CXth = (a) => 0.15 + 2 * a, CXph = () => 1.12, DIAGth = (a) => 0.5 + (1 + 1.6 * a) * 0.1, DIAGph = (a) => 1 + 1.6 * a;
+  vessel(path(16, LADth, LADph), (u) => 0.045 * (1 - 0.5 * u), 60, 8);                                                                   // LAD
+  vessel(path(18, RCAth, RCAph, 1.035), (u) => 0.045 * (1 - 0.35 * u), 64, 8);                                                           // RCA (to the crux)
+  vessel(path(14, CXth, CXph, 1.035), (u) => 0.04 * (1 - 0.4 * u), 60, 8);                                                               // circumflex
   vessel(path(14, (a) => 0.22 - (0.7 + 2.1 * a) * 0.05, (a) => 0.7 + 2.1 * a, 1.045), () => 0.032, 60, 8, true);                        // great cardiac vein
-  vessel(path(10, (a) => 0.5 + (1 + 1.6 * a) * 0.1, (a) => 1 + 1.6 * a), (u) => 0.026 * (1 - 0.5 * u), 40, 6);                           // diagonal
+  vessel(path(10, DIAGth, DIAGph), (u) => 0.026 * (1 - 0.5 * u), 40, 6);                                                                 // diagonal
   vessel(path(10, (a) => -0.8 - (1.25 + 1.5 * a) * 0.12, (a) => 1.25 + 1.5 * a), (u) => 0.024 * (1 - 0.5 * u), 40, 6);                   // acute marginal
-  vessel(path(12, (a) => -2.4 - 0.62 * smooth(0, 0.3, a) - 0.05 * a, (a) => 1.27 + 1.5 * a, 1.035), (u) => 0.03 * (1 - 0.5 * u), 40, 6); // posterior descending (RCA -> crux -> apex)
-  vessel(path(12, (a) => -3.2 - 0.04 * a, (a) => 1.35 + 1.45 * a, 1.04), () => 0.024, 40, 6, true);                                       // middle cardiac vein
+  vessel(path(14, PDAth, PDAph, 1.035), (u) => 0.03 * (1 - 0.5 * u), 48, 6);                                                             // posterior descending (crux -> apex in the PIV groove)
+  vessel(path(14, (a) => PDAth(a) + 0.12 + 0.02 * Math.sin(a * 4 + 1), (a) => 1.36 + 1.42 * a, 1.04), () => 0.024, 48, 6, true);         // middle cardiac vein (parallel, left of the PDA)
   vessel(path(10, (a) => 1.45 + 0.2 * a, (a) => 1.2 + 1.45 * a), (u) => 0.024 * (1 - 0.5 * u), 40, 6);                                   // obtuse marginal (Cx)
-  vessel(path(10, (a) => 2.2 - 0.12 * a, (a) => 1.25 + 1.2 * a, 1.035), () => 0.02, 32, 6, true);                                        // posterior vein of the LV
+  vessel(path(10, (a) => 2.2 - 0.12 * a + 0.03 * Math.sin(a * 6), (a) => 1.25 + 1.2 * a, 1.035), () => 0.02, 32, 6, true);              // posterior vein of the LV
   vessel(path(8, (a) => -1.5 - 0.5 * a, (a) => 1.16 + 0.05 * a, 1.035), () => 0.02, 32, 6, true);                                        // small cardiac vein (right AV groove)
-  for (const ph0 of [1.05, 1.45, 1.85]) vessel(path(6, (a) => 0.1 - ph0 * 0.06 - 0.3 * a, (a) => ph0 + 0.08 * a, 1.03), (u) => 0.016 * (1 - 0.6 * u), 20, 5);     // septal perforators (LAD)
-  const twig = (th0, ph0, dth, dph, r = 0.014) => vessel(path(6, (a) => th0 + dth * a + 0.06 * Math.sin(a * 7 + th0), (a) => ph0 + dph * a), (u) => r * (1 - 0.55 * u), 20, 5);
-  const trunks = [[(a) => 0.1 - (0.55 + 2.35 * a) * 0.06, (a) => 0.55 + 2.35 * a], [(a) => -0.1 - 2.3 * a, (a) => 1.14 + 0.15 * a], [(a) => 0.15 + 2 * a, () => 1.12], [(a) => 0.5 + (1 + 1.6 * a) * 0.1, (a) => 1 + 1.6 * a], [(a) => -2.4 - 0.62 * smooth(0, 0.3, a) - 0.05 * a, (a) => 1.27 + 1.5 * a]];
+  /* fine twigs + septal perforators live in twigG (hidden far away and on slow devices) */
+  for (const ph0 of [1.05, 1.45, 1.85]) vessel(path(6, (a) => 0.1 - ph0 * 0.06 - 0.3 * a, (a) => ph0 + 0.08 * a, 1.03), (u) => 0.016 * (1 - 0.6 * u), 20, 5, false, twigG);     // septal perforators (LAD)
+  const twig = (th0, ph0, dth, dph, r = 0.014) => vessel(path(6, (a) => th0 + dth * a + 0.06 * Math.sin(a * 7 + th0), (a) => ph0 + dph * a), (u) => r * (1 - 0.55 * u), 20, 5, false, twigG);
+  const trunks = [[LADth, LADph], [RCAth, RCAph], [CXth, CXph], [DIAGth, DIAGph], [PDAth, PDAph]];
   for (let i = 0; i < 14; i++) {
     const [thF, phF] = trunks[i % trunks.length], a = 0.25 + 0.6 * rnd(), side = rnd() < 0.5 ? -1 : 1;
     twig(thF(a), phF(a), side * (0.25 + 0.3 * rnd()), 0.2 + 0.3 * rnd(), 0.011 + 0.005 * rnd());
   }
 
   mitral.set(1); tricuspid.set(1); aortic.set(0); pulmonary.set(0);
-  detailG.visible = false;
-  Object.assign(ctx.anchors, { heartPos, heartSurf, heartG, ventG, atriaG });
+  detailG.visible = twigG.visible = false; for (const m of atrialDetail) m.visible = false;
+  /* anchors: heartCut (live 0..1 cut amount, see update) + heartCutPlane (heart-local plane of the ghosted anterior wall) */
+  Object.assign(ctx.anchors, { heartPos, heartSurf, heartG, ventG, atriaG, heartCut: 0, heartCutPlane });
 }
 
 /* ---------- per frame ---------- */
@@ -405,13 +419,29 @@ export function update(f, t, phys) {
   ventG.scale.set(1 - 0.055 * l, 1 - 0.04 * l + 0.02 * a, 1 - 0.055 * l);
   ventG.rotation.y = 0.045 * l;               // ventricular twist
 
-  /* cut-away: open when the camera is near the heart (always when very close, or when the heart is the orbit target) */
-  const dist = C.camera.position.distanceTo(heartPos), dTgt = C.controls.target.distanceTo(heartPos);
-  const target = Math.max(smooth(9.5, 7.5, dist), smooth(13.5, 11.8, dist) * smooth(1.9, 1.0, dTgt));
+  /* cut-away: open when the camera is near the heart — always when very close, when the heart is the orbit target
+   * (heart view / cards), or when a close frame (< 10.5 units, e.g. the blood-pressure station) holds the whole heart
+   * in its central area (projected heart centre within ±0.5 NDC). Solid on slow devices and whenever the amount is < 5 %. */
+  const perf = C.state.perf ?? 2, dist = C.camera.position.distanceTo(heartPos), dTgt = C.controls.target.distanceTo(heartPos);
+  let target = 0;
+  if (perf > 0) {
+    target = Math.max(smooth(9.5, 7.5, dist), smooth(13.5, 11.8, dist) * smooth(1.9, 1.0, dTgt));
+    if (dist < 11.2 && target < 1) {
+      _v.copy(heartPos).project(C.camera);
+      target = Math.max(target, smooth(11.2, 10.2, dist) * smooth(0.68, 0.5, Math.max(Math.abs(_v.x), Math.abs(_v.y))));
+    }
+    if (target < 0.05) target = 0;
+  }
   cutCur = Math.abs(cutCur - target) < 0.002 ? target : lerp(cutCur, target, 1 - Math.exp(-dtEase * 9));
   for (const m of fadeMats) { m.userData.cut.value = cutCur; m.depthWrite = cutCur < 0.03; }
-  detailG.visible = dist < 16 || cutCur > 0.01;
-  if (!detailG.visible) return;
+  if (cutCur !== lastCutPub) {                 // published for organs/fat.js (epicardial lobules on the ghosted wall fade with it)
+    C.anchors.heartCut = lastCutPub = cutCur;
+    if (typeof C.anchors.epiFade === 'function') C.anchors.epiFade(cutCur);
+  }
+  const showDetail = perf > 0 && (dist < 16 || cutCur > 0.01);
+  if (showDetail !== lastDetail) { detailG.visible = showDetail; for (const m of atrialDetail) m.visible = showDetail; lastDetail = showDetail; }
+  twigG.visible = perf > 1 && dist < 16;
+  if (!showDetail) return;
 
   /* valves follow the cycle phase (phys.heartPhase runs at phys.hr): AV close as the ventricle starts to contract, semilunar open for ejection */
   const avOpen = 1 - win(ph, 0.12, 0.44, 0.03), slOpen = win(ph, 0.17, 0.40, 0.03);

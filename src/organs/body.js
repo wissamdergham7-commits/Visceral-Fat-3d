@@ -1,11 +1,12 @@
-// organs/body.js — torso shell (skin + subcutaneous fat volume + fascia shell, states A/B) and the skeleton.
+// organs/body.js — torso shell (skin 110x80 + subcutaneous fat volume and fascia shells 72x56, states A/B) and the skeleton.
 // Publishes ctx.anchors.torsoRadii(y, W, Wz, inset) for the cross-section drawing,
 // ctx.anchors.innerWallZ(y, x, body) (anterior z of the inner fascia shell, exact) and
 // ctx.anchors.wallSampler(body) (fast table-based (y, x) -> z of the same shell for per-frame use).
 import { THREE, P, clamp, lerp, smooth, deform, vtube, add, LAYER } from '../core/ctx.js';
 import { palette, mats } from '../core/style.js';
 
-const ROWS = 110, COLS = 80, Y0 = -4.9, Y1 = 5.4;
+const ROWS = 110, COLS = 80, Y0 = -4.9, Y1 = 5.4;      // skin grid
+const ROWS_I = 72, COLS_I = 56;                            // inner shells (fat volume / fascia): same parametrisation, cheaper
 
 /** [y, halfWidthX, halfDepthZ] control rows of the torso. W/Wz = belly radii. */
 export function torsoProfile(W, Wz) {
@@ -71,44 +72,43 @@ export function wallSampler(b, y0 = -4.9, y1 = 1.4, rows = 84) {
   };
 }
 
-/* ---------- torso grid: 3 shells per state (skin / fat volume / fascia) share one normal buffer ---------- */
-const COS = new Float32Array(COLS + 1), SIN = new Float32Array(COLS + 1), CZP = new Float32Array(COLS + 1);   // per-column trig
-for (let c = 0; c <= COLS; c++) { const a = c / COLS * Math.PI * 2; COS[c] = Math.cos(a); SIN[c] = Math.sin(a); CZP[c] = Math.pow(Math.max(0, COS[c]), 1.6); }
+/* ---------- torso grid: 3 shells per state (skin 110x80 / fat volume 72x56 / fascia 72x56), each with grid normals ---------- */
+function trig(cols) {
+  const COS = new Float32Array(cols + 1), SIN = new Float32Array(cols + 1), CZP = new Float32Array(cols + 1);   // per-column trig
+  for (let c = 0; c <= cols; c++) { const a = c / cols * Math.PI * 2; COS[c] = Math.cos(a); SIN[c] = Math.sin(a); CZP[c] = Math.pow(Math.max(0, COS[c]), 1.6); }
+  return { COS, SIN, CZP };
+}
+const TRIG = { [COLS]: trig(COLS), [COLS_I]: trig(COLS_I) };
 const SPHERE = new THREE.Sphere(P(0, 0.25, 0), 7.5);     // conservative bounds (never recomputed)
 
-function makeTorsoGeo(normalAttr) {
-  const g = new THREE.BufferGeometry();
-  const pos = new THREE.BufferAttribute(new Float32Array((ROWS + 1) * (COLS + 1) * 3), 3); pos.setUsage(THREE.DynamicDrawUsage);
-  g.setAttribute('position', pos);
-  g.setAttribute('normal', normalAttr || (() => { const n = new THREE.BufferAttribute(new Float32Array((ROWS + 1) * (COLS + 1) * 3), 3); n.setUsage(THREE.DynamicDrawUsage); return n; })());
+function makeTorsoGeo(rows, cols) {
+  const g = new THREE.BufferGeometry(), n = (rows + 1) * (cols + 1);
+  const pos = new THREE.BufferAttribute(new Float32Array(n * 3), 3), nor = new THREE.BufferAttribute(new Float32Array(n * 3), 3);
+  pos.setUsage(THREE.DynamicDrawUsage); nor.setUsage(THREE.DynamicDrawUsage);
+  g.setAttribute('position', pos); g.setAttribute('normal', nor);
   const idx = [];
-  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
-    const a = r * (COLS + 1) + c, b = a + COLS + 1;
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    const a = r * (cols + 1) + c, b = a + cols + 1;
     idx.push(a, b, a + 1, b, b + 1, a + 1);
   }
   g.setIndex(idx);
   g.boundingSphere = SPHERE.clone();
-  return g;
+  return { geo: g, rows, cols, pos: pos.array, nor: nor.array };
 }
-/** lay one state's three shells (insets 0, d/2, d) in a single pass; normals from the skin grid. */
-function layState(S, W, Wz, bulge, d) {
-  const prof = profileFor(W, Wz), insets = [0, d * 0.5, d], W1 = COLS + 1;
-  for (let r = 0; r <= ROWS; r++) {
-    const y = lerp(Y0, Y1, r / ROWS), bx = sample(prof, y, 1), bz = sample(prof, y, 2), u = bellyBulge(y, bulge);
-    for (let s = 0; s < 3; s++) {
-      const rx = Math.max(0.3, bx - insets[s]), rz = Math.max(0.3, bz - insets[s]), pos = S.pos[s];
-      for (let c = 0; c <= COLS; c++) {
-        const i = (r * W1 + c) * 3;
-        pos[i] = rx * SIN[c]; pos[i + 1] = y; pos[i + 2] = rz * COS[c] * (1 + u * CZP[c]) - 0.05;
-      }
+/** lay one shell (inset from the profile) and its grid normals (closed around the circumference) */
+function layShell(S, prof, inset, bulge) {
+  const { rows, cols, pos, nor } = S, { COS, SIN, CZP } = TRIG[cols], W1 = cols + 1;
+  for (let r = 0; r <= rows; r++) {
+    const y = lerp(Y0, Y1, r / rows), rx = Math.max(0.3, sample(prof, y, 1) - inset), rz = Math.max(0.3, sample(prof, y, 2) - inset), u = bellyBulge(y, bulge);
+    for (let c = 0; c <= cols; c++) {
+      const i = (r * W1 + c) * 3;
+      pos[i] = rx * SIN[c]; pos[i + 1] = y; pos[i + 2] = rz * COS[c] * (1 + u * CZP[c]) - 0.05;
     }
   }
-  /* grid normals of the skin (shared by the inner shells: parallel surfaces) */
-  const pos = S.pos[0], nor = S.nor;
-  for (let r = 0; r <= ROWS; r++) {
-    const r0 = Math.max(0, r - 1) * W1, r1 = Math.min(ROWS, r + 1) * W1;
-    for (let c = 0; c <= COLS; c++) {
-      const c0 = c === 0 ? COLS - 1 : c - 1, c1 = c === COLS ? 1 : c + 1;                 // closed around
+  for (let r = 0; r <= rows; r++) {
+    const r0 = Math.max(0, r - 1) * W1, r1 = Math.min(rows, r + 1) * W1;
+    for (let c = 0; c <= cols; c++) {
+      const c0 = c === 0 ? cols - 1 : c - 1, c1 = c === cols ? 1 : c + 1;                 // closed around
       const a = (r * W1 + c1) * 3, b = (r * W1 + c0) * 3, dn = (r1 + c) * 3, up = (r0 + c) * 3;
       const cx = pos[a] - pos[b], cy = pos[a + 1] - pos[b + 1], cz = pos[a + 2] - pos[b + 2];
       const rxv = pos[dn] - pos[up], ryv = pos[dn + 1] - pos[up + 1], rzv = pos[dn + 2] - pos[up + 2];
@@ -117,14 +117,19 @@ function layState(S, W, Wz, bulge, d) {
       const i = (r * W1 + c) * 3; nor[i] = nx / l; nor[i + 1] = ny / l; nor[i + 2] = nz / l;
     }
   }
-  for (const g of S.geos) g.attributes.position.needsUpdate = true;
-  S.geos[0].attributes.normal.needsUpdate = true;
+  S.geo.attributes.position.needsUpdate = true; S.geo.attributes.normal.needsUpdate = true;
+}
+/** lay one state's three shells (insets 0, d/2, d) */
+function layState(S, W, Wz, bulge, d) {
+  const prof = profileFor(W, Wz);
+  layShell(S.skin, prof, 0, bulge); layShell(S.vol, prof, d * 0.5, bulge); layShell(S.fas, prof, d, bulge);
   S.volMat.uniforms.d.value = d;
 }
 
 /** Subcutaneous fat volume: a thickness-tinted, marbled translucent shell placed in the middle of the fat
- *  layer. Opacity follows a slab model (face alpha grows with thickness d, grazing rays become nearly
- *  opaque) so the layer reads as a real yellow band under the skin. Needs a shader (thickness + marbling). */
+ *  layer. Opacity is rim-weighted (fresnel): nearly clear face-on so the organs behind it are not washed out in
+ *  close-ups, growing with thickness d and nearly opaque at grazing angles so the layer reads as a real yellow
+ *  band under the skin at the silhouette. Needs a shader (thickness + marbling). */
 function subcutVolumeMat() {
   return new THREE.ShaderMaterial({
     clipping: true,
@@ -148,15 +153,15 @@ function subcutVolumeMat() {
       void main(){
         #include <clipping_planes_fragment>
         float nv = abs(dot(normalize(vN), normalize(vV)));
-        float fr = pow(1.0 - nv, 2.2);
+        float fr = pow(1.0 - nv, 1.8);
         float m = vnoise(vP*2.6) * 0.55 + vnoise(vP*6.5) * 0.3 + vnoise(vP*14.0) * 0.15;   // lobulated marbling
         float septa = smoothstep(0.50, 0.55, m) * (1.0 - smoothstep(0.55, 0.61, m));        // pale fibrous septa
         float th = clamp(d * 1.8, 0.0, 1.0);
         vec3 col = mix(cLight, cDeep, th * 0.65);
         col = mix(col, cSepta, septa * 0.4 + 0.08 * m);
         col *= 0.8 + 0.8 * fr;
-        float aFace = (0.03 + 0.17 * d) * (0.65 + 0.7 * m);
-        float aEdge = clamp(0.15 + 1.0 * d, 0.0, 0.7);
+        float aFace = (0.01 + 0.05 * d) * (0.65 + 0.7 * m);                                  // nearly clear face-on …
+        float aEdge = clamp(0.25 + 1.1 * d, 0.0, 0.8);                                         // … a solid yellow band at the rim
         gl_FragColor = vec4(col, aFace + aEdge * fr);
         #include <tonemapping_fragment>
         #include <colorspace_fragment>
@@ -169,12 +174,12 @@ let C, stA, stB, boneMat, cartMat, lastA = null, lastB = -1, lastT = 0;
 
 /** one state's shells: skin (render order 10) > fat volume (9) > fascia (8), all on `layer` */
 function makeState(layer, skinMat, fatMat, groups) {
-  const skin = makeTorsoGeo(), vol = makeTorsoGeo(skin.attributes.normal), fas = makeTorsoGeo(skin.attributes.normal);
+  const skin = makeTorsoGeo(ROWS, COLS), vol = makeTorsoGeo(ROWS_I, COLS_I), fas = makeTorsoGeo(ROWS_I, COLS_I);
   const volMat = subcutVolumeMat();
-  const s = add(skin, skinMat, groups.skin, 'skin'); s.renderOrder = 10; s.layers.set(layer);
-  const v = add(vol, volMat, groups.skin, 'skin'); v.renderOrder = 9; v.layers.set(layer);
-  const f = add(fas, fatMat, groups.skin, 'skin'); f.renderOrder = 8; f.layers.set(layer);
-  return { geos: [skin, vol, fas], pos: [skin.attributes.position.array, vol.attributes.position.array, fas.attributes.position.array], nor: skin.attributes.normal.array, volMat };
+  const s = add(skin.geo, skinMat, groups.skin, 'skin'); s.renderOrder = 10; s.layers.set(layer);
+  const v = add(vol.geo, volMat, groups.skin, 'skin'); v.renderOrder = 9; v.layers.set(layer);
+  const f = add(fas.geo, fatMat, groups.skin, 'skin'); f.renderOrder = 8; f.layers.set(layer);
+  return { skin, vol, fas, volMat };
 }
 
 export function build(ctx) {
