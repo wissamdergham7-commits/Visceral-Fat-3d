@@ -11,10 +11,10 @@ export const VIEWS = {
   /* the physiology panel docks on the LEFT ~372 px, so station targets are shifted to −x (patient's right) to keep
      the subject in the right 60 % of the frame */
   bp: [P(1.6, 3.4, 9.6), P(-0.9, 2.3, 0.1)],
-  breath: [P(-0.4, 0.5, 12.2), P(-2.1, 0.75, 0)],
+  breath: [P(0.4, 2.1, 11.6), P(-1.6, 1.45, 0)],
   snore: () => { const a = C.anchors.pharynxPos || P(0, 7.75, -0.2); return [a.clone().add(P(6.2, 2.6, 9.8)), a.clone().add(P(-1.7, 0.75, 0))]; },
 };
-const VIEW_OPACITY = { front: [0.6, 0.5], side: [0.6, 0.5], heart: [0.1, 0.12], liver: [0.18, 0.35], belly: [0.3, 0.5], section: [0.25, 0.2], full: [0.6, 0.5], bp: [0.1, 0.1], breath: [0.12, 0.75], snore: [0.15, 0.2] };
+const VIEW_OPACITY = { front: [0.6, 0.5], side: [0.6, 0.5], heart: [0.1, 0.12], liver: [0.18, 0.35], belly: [0.3, 0.5], section: [0.25, 0.2], full: [0.6, 0.5], bp: [0.1, 0.1], breath: [0.12, 0.85], snore: [0.15, 0.2] };
 
 let C, camAnim = null, hooks;
 

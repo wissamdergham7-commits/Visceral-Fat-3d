@@ -170,9 +170,12 @@ function buildSpleen(ab) {
 
 /* ============================== colon ============================== */
 function buildColon(ab) {
-  const cpts = [P(-1.9, -3.5, 0.55), P(-1.95, -3.05, 0.6), P(-1.98, -2.55, 0.62), P(-1.97, -2.05, 0.66), P(-1.92, -1.6, 0.7), P(-1.7, -1.3, 0.8),
-    P(-1.1, -1.7, 1.0), P(-0.4, -2.1, 1.06), P(0.4, -2.22, 1.06), P(1.1, -2.1, 0.98), P(1.6, -1.92, 0.62), P(2.08, -1.5, -0.1),
-    P(2.08, -2.0, 0.05), P(2.02, -2.6, 0.2), P(1.9, -3.2, 0.4), P(1.45, -3.65, 0.68), P(0.85, -3.78, 0.75), P(0.35, -3.55, 0.35), P(0.08, -3.78, -0.15), P(0.02, -4.15, -0.5), P(0, -4.45, -0.65)];
+  /* hepatic flexure under the right lobe (y ≈ −1.62); transverse colon sags below the stomach's greater curvature; the
+   * splenic flexure sits HIGHER (y ≈ −1.38), posterolateral to the stomach, below the spleen's lower pole and lateral to
+   * the left kidney's capsule (clearances checked against those organs' centres and radii) */
+  const cpts = [P(-1.9, -3.5, 0.55), P(-1.95, -3.05, 0.6), P(-1.98, -2.55, 0.62), P(-1.97, -2.1, 0.66), P(-1.94, -1.85, 0.68), P(-1.72, -1.62, 0.78),
+    P(-1.1, -1.95, 1.0), P(-0.4, -2.18, 1.06), P(0.4, -2.28, 1.06), P(1.1, -2.25, 0.95), P(1.6, -2.15, 0.6), P(2.05, -1.38, -0.35),
+    P(2.1, -2.0, -0.15), P(2.02, -2.6, 0.2), P(1.9, -3.2, 0.4), P(1.45, -3.65, 0.68), P(0.85, -3.78, 0.75), P(0.35, -3.55, 0.35), P(0.08, -3.78, -0.15), P(0.02, -4.15, -0.5), P(0, -4.45, -0.65)];
   const curve0 = new THREE.CatmullRomCurve3(cpts, false, 'catmullrom', 0.5), L = curve0.getLength();
   /* irregular sacculations: three rows (between the taeniae), each its own random segmentation along the arc length */
   setSeed(2002);

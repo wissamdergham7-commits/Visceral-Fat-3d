@@ -99,16 +99,18 @@ function family(list, wallM, coreM, parent, key, order = 1) {
 }
 
 /* ---------- blood cells ---------- */
-function makePath(kind, pts, rFn, n) {
+/* kind = flow pattern ('art' pulsatile / 'vein' steady); blood = cell colour ('oxy' / 'deoxy'). They differ in the
+ * pulmonary circuit: pulmonary arteries pulse but carry oxygen-poor blood, pulmonary veins are steady but oxygen-rich. */
+function makePath(kind, pts, rFn, n, blood = kind === 'art' ? 'oxy' : 'deoxy') {
   const curve = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.5);
-  const p = { kind, curve, len: curve.getLength(), rFn, n };
+  const p = { kind, blood, curve, len: curve.getLength(), rFn, n };
   paths.push(p); return p;
 }
 function cellMat() {
   return new THREE.MeshBasicMaterial({ color: palette.white, transparent: true, opacity: 0.8, blending: THREE.AdditiveBlending, depthWrite: false });
 }
-function makeCells(kind, color, parent) {
-  const list = cells.filter((c) => c.path.kind === kind);
+function makeCells(blood, color, parent) {
+  const list = cells.filter((c) => c.path.blood === blood);
   const inst = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 7, 5), cellMat(), Math.max(1, list.length));
   for (let i = 0; i < list.length; i++) inst.setColorAt(i, color);
   inst.instanceMatrix.setUsage(THREE.DynamicDrawUsage); inst.frustumCulled = false; inst.renderOrder = 0;
@@ -132,8 +134,8 @@ export function build(ctx) {
   for (const s of [-1, 1]) {                                    // common -> external / internal iliac
     const x0 = 0.08, bif = P(x0 + s * 0.78, -4.1, -0.85);
     const ci = vessel('art', [P(x0, -3.4, -0.95), P(x0 + s * 0.42, -3.75, -0.92), bif], () => 0.13, 30, 14, { parent: aorta });
-    vessel('art', [bif, P(x0 + s * 1.02, -4.45, -0.55), P(x0 + s * 1.22, -4.88, -0.2)], (u) => 0.11 - 0.015 * u, 30, 12, { parent: ci });
-    vessel('art', [bif, P(x0 + s * 0.88, -4.4, -1.02), P(x0 + s * 0.92, -4.75, -1.08)], () => 0.075, 20, 10, { parent: ci });
+    vessel('art', [bif, P(x0 + s * 1.02, -4.45, -0.55), P(x0 + s * 1.16, -4.6, -0.32)], (u) => 0.11 - 0.015 * u, 30, 12, { parent: ci });
+    vessel('art', [bif, P(x0 + s * 0.88, -4.4, -1.02), P(x0 + s * 0.92, -4.55, -1.06)], () => 0.075, 20, 10, { parent: ci });
   }
   /* arch branches */
   const bct = vessel('art', [P(0.22, 3.33, 0.22), P(0.0, 3.65, 0.3), P(-0.35, 3.95, 0.35)], (u) => 0.115 - 0.015 * u, 30, 14, { parent: aorta });
@@ -185,7 +187,7 @@ export function build(ctx) {
   const ilv = {};
   for (const s of [-1, 1]) {                                    // common iliac veins (posterior to the arteries)
     const x0 = -0.3, side = s > 0 ? 1.15 : 1;
-    ilv[s] = vessel('vein', [ivcBot, P(x0 + s * 0.5 * side, -3.9, -1.2), P(x0 + s * 0.95 * side, -4.3, -1.1), P(x0 + s * 1.25 * side, -4.65, -0.8), P(x0 + s * 1.4 * side, -4.9, -0.45)], () => 0.12, 40, 10);
+    ilv[s] = vessel('vein', [ivcBot, P(x0 + s * 0.5 * side, -3.9, -1.2), P(x0 + s * 0.95 * side, -4.3, -1.1), P(x0 + s * 1.22 * side, -4.5, -0.85), P(x0 + s * 1.32 * side, -4.62, -0.6)], () => 0.12, 40, 10);
   }
   const hv0 = P(-0.4, 0.15, -0.5);                               // hepatic veins entering the IVC (fine detail)
   vessel('vein', [hv0, P(-1.1, 0.0, -0.2), P(-1.7, -0.3, 0.15)], () => 0.06, 16, 8, { detail: true });
@@ -222,7 +224,8 @@ export function build(ctx) {
   const cat = (...parts) => parts.flat();
   const pick = (s) => s.rFn;
   const leftCI = specs.find((s) => s.parent === aorta && s.pts[0].y === -3.4 && s.pts[2].x > 0), rightCI = specs.find((s) => s.parent === aorta && s.pts[0].y === -3.4 && s.pts[2].x < 0);
-  const extL = specs.find((s) => s.parent === leftCI && s.pts[2].y < -4.8), extR = specs.find((s) => s.parent === rightCI && s.pts[2].y < -4.8);
+  const isExt = (s) => Math.abs(s.pts[2].z + 0.32) < 0.01;   // external iliac ends anteriorly (z −0.32); the internal one posteriorly
+  const extL = specs.find((s) => s.parent === leftCI && isExt(s)), extR = specs.find((s) => s.parent === rightCI && isExt(s));
   makePath('art', cat(seg(aorta), seg(leftCI).slice(1), seg(extL).slice(1)), (u) => lerp(0.27, 0.11, u), 44);
   makePath('art', cat(seg(aorta, 0.55, 1), seg(rightCI).slice(1), seg(extR).slice(1)), (u) => lerp(0.2, 0.11, u), 14);
   makePath('art', cat(seg(bct), seg(rcc).slice(1)), () => 0.085, 8);
@@ -230,18 +233,18 @@ export function build(ctx) {
   makePath('art', seg(specs.find((s) => s.parent === aorta && s.pts[0].x === 0.66)), () => 0.08, 6);
   makePath('art', seg(specs.find((s) => s.parent === bct && s.pts[2].x < -1)), () => 0.08, 6);
   makePath('art', seg(rra), () => 0.08, 4); makePath('art', seg(lra), () => 0.08, 3);
-  makePath('art', cat(seg(trunk), seg(lpa).slice(1)), () => 0.14, 7);
-  makePath('art', cat(seg(trunk), seg(rpa).slice(1)), () => 0.14, 8);
+  makePath('art', cat(seg(trunk), seg(lpa).slice(1)), () => 0.14, 7, 'deoxy');     // pulmonary arteries: oxygen-poor
+  makePath('art', cat(seg(trunk), seg(rpa).slice(1)), () => 0.14, 8, 'deoxy');
   makePath('vein', cat(seg(ilv[1], 1, 0), seg(ivc).slice(1)), () => 0.2, 26);
   makePath('vein', cat(seg(ilv[-1], 1, 0), seg(ivc, 0, 0.3).slice(1)), () => 0.15, 6);
   const ijL = specs.find((s) => s.kind === 'vein' && s.pts[0].y === 7.05 && s.pts[0].x > 0), ijR = specs.find((s) => s.kind === 'vein' && s.pts[0].y === 7.05 && s.pts[0].x < 0);
   makePath('vein', cat(seg(ijL), seg(lbcv).slice(1), seg(svc).slice(1)), () => 0.13, 14);
   makePath('vein', cat(seg(ijR), seg(rbcv).slice(1), seg(svc).slice(1)), () => 0.13, 10);
   makePath('vein', seg(rrv), () => 0.09, 3); makePath('vein', seg(lrv), () => 0.09, 4);
-  for (const s of [...pvL, ...pvR]) makePath('vein', seg(s), () => 0.075, 4);
+  for (const s of [...pvL, ...pvR]) makePath('vein', seg(s), () => 0.075, 4, 'oxy');   // pulmonary veins: oxygen-rich
   for (const p of paths) for (let i = 0; i < p.n; i++)
     cells.push({ path: p, u: rnd(), ang: rnd() * Math.PI * 2, rad: 0.45 + rnd() * 0.35, spd: 0.75 + rnd() * 0.5, spin: (rnd() - 0.5) * 2 });
-  cellsArt = makeCells('art', cCellOxy, V); cellsVein = makeCells('vein', cCellDeoxy, V);
+  cellsArt = makeCells('oxy', cCellOxy, V); cellsVein = makeCells('deoxy', cCellDeoxy, V);   // grouped by blood, not by vessel
 
   aortaCurve = aorta.curve; ivcCurve = ivc.curve;
   Object.assign(C.anchors, { aortaCurve, ivcCurve, raPos, laPos });
@@ -290,7 +293,7 @@ export function update(f, t, phys) {
     pos.addScaledVector(nrm, Math.cos(a) * c.rad * r).addScaledVector(bin, Math.sin(a) * c.rad * r);
     dummy.position.copy(pos); dummy.quaternion.setFromUnitVectors(Y_AXIS, tg);
     dummy.scale.set(s, s * (art ? 1.3 + 0.9 * vp : 1.4), s); dummy.updateMatrix();
-    if (art) cellsArt.setMatrixAt(ia++, dummy.matrix); else cellsVein.setMatrixAt(iv++, dummy.matrix);
+    if (p.blood === 'oxy') cellsArt.setMatrixAt(ia++, dummy.matrix); else cellsVein.setMatrixAt(iv++, dummy.matrix);
   }
   cellsArt.instanceMatrix.needsUpdate = cellsVein.instanceMatrix.needsUpdate = true;
 }
